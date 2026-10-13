@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Talkie",
+  "version": "0.1.0",
+  "identifier": "com.talkie.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev --workspace @talkie/client",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build --workspace @talkie/client",
+    "frontendDist": "../client/dist"
+  },
+  "app": {
+    "windows": [{ "title": "Talkie", "width": 900, "height": 700, "minWidth": 420, "minHeight": 560, "resizable": true }],
+    "security": { "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:8787 ws://localhost:8787 wss:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'self'" }
+  },
+  "bundle": { "active": true, "targets": ["nsis"], "windows": { "nsis": { "installMode": "currentUser" } } }
+}

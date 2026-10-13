@@ -1,0 +1,22 @@
+{
+  "name": "talkie",
+  "private": true,
+  "version": "0.1.0",
+  "engines": { "node": ">=22" },
+  "workspaces": ["client", "server"],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm test --workspaces",
+    "build": "npm run build --workspaces",
+    "dev:client": "npm run dev --workspace @talkie/client",
+    "dev:server": "npm run dev --workspace talkie-signaling-server",
+    "tauri": "tauri",
+    "test:production": "node scripts/smoke-server.mjs",
+    "test:contract": "node --import tsx scripts/smoke-signaling.mjs",
+    "verify:windows": "node scripts/verify-windows.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "tsx": "^4.19.2"
+  }
+}

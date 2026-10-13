@@ -1,0 +1,92 @@
+name: Windows MVP build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Test and bundle Windows x64 (unsigned)
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Real client/server protocol contract
+        run: npm run test:contract
+
+      - name: Build client and server
+        run: npm run build
+
+      - name: Smoke-test built production server
+        run: npm run test:production
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Native environment
+        run: npm run tauri -- info
+
+      - name: Bundle unsigned Windows installer
+        run: npm run tauri -- build -- --locked
+
+      - name: Verify PE architecture and checksums
+        run: npm run verify:windows
+
+      - name: Upload executable and installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Talkie-Windows-x64-unsigned
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            src-tauri/target/release/talkie.exe
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+
+      - name: Verify required files and directories
+        shell: pwsh
+        run: |
+          $requiredFiles = @(
+            'README.md',
+            '.env.example',
+            'docs/architecture-review.md',
+            'docs/deployment.md',
+            'docs/testing.md',
+            'docs/troubleshooting.md'
+          )
+          $requiredDirectories = @('client', 'server', 'src-tauri', 'docs')
+
+          foreach ($path in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Required file is missing: $path"
+            }
+          }
+
+          foreach ($path in $requiredDirectories) {
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+              throw "Required directory is missing: $path"
+            }
+          }
+
+          Write-Host 'Talkie scaffold files and directories are present.'

@@ -1,0 +1,31 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# JavaScript dependencies and build output
+node_modules/
+dist/
+*.tsbuildinfo
+client/vite.config.js
+client/vite.config.d.ts
+
+# Rust/Tauri output
+target/
+src-tauri/gen/
+# The icon command also generates unused platform artwork.
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/*.icns
+
+# Test and coverage output
+coverage/
+*.log
+test-results/
+playwright-report/
+
+# Local editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
