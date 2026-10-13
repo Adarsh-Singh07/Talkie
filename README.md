@@ -2,7 +2,7 @@
 
 Talkie is a Windows push-to-talk desktop MVP. Two participants join a private room and exchange live microphone audio directly over WebRTC. The signaling service coordinates room membership and WebRTC negotiation; it does not carry, record, or persist audio.
 
-> **Status:** reliability-audited trial build, not a production release. Automated media-safety and live signaling tests pass; an unsigned Windows x64 executable and NSIS installer have been built and launch-tested. Two-PC voice, global hotkey in games, lock/sleep, and TURN tests are still outstanding. See [the release report](docs/release-audit.md).
+> **Status:** the baseline `adcad3d` Windows installer passed its local build/launch audit. The remote-trial continuation adds strict public-endpoint validation and temporary TURN credentials, but public deployment is **blocked by access to the selected existing host**. No new remote-ready installer has been published. See [trial deployment status](docs/trial-deployment.md) and [the baseline release report](docs/release-audit.md).
 
 ## Target architecture
 
@@ -42,7 +42,7 @@ scripts/                live signaling, production startup, PE verification
 - DOM/native focus and close events, hidden document, disconnect, leave, and microphone failure invalidate local intent and the actual audio gate. Lock/sleep/resume require real Windows validation; do not infer those results from mocked events.
 - Each hold has a hard 30-second lease by default, with a conservative monotonic client deadline. No lease renewal or automatic resumption is implemented.
 - Private resume credentials prevent a token-holding peer from taking over another participant's session ID. Only credential hashes persist in memory until room expiry.
-- Production signaling must use WSS. TURN credentials are configured on the server and necessarily shared with joined clients; automatic short-lived TURN issuance is **not implemented**. Use limited-lifetime trial credentials and quotas.
+- Production signaling must use WSS. Coturn REST credentials are minted on the signaling server after room admission and expire; the shared signing secret is never sent to the clients. A live TURN deployment/allocation has not yet been tested.
 
 See [the architecture review](docs/architecture-review.md) for risks, decisions still required, and acceptance criteria.
 
@@ -54,14 +54,21 @@ Requirements: Node.js 22+. From the repository root:
 npm ci
 npm run typecheck
 npm test
-npm run build
 npm run test:contract
-npm run test:production
+npm run test:build-config
 ```
 
 In separate terminals run `npm run dev:server` and `npm run dev:client`. The browser UI is at `http://localhost:5173`; signaling defaults to `ws://127.0.0.1:8787`. Space is focused PTT; Ctrl+Shift+Space is native global PTT. Escape latches emergency mute. Use headphones and a separate room code/token field for joining (OS invitation-link activation is not implemented).
 
-For configuration, copy `.env.example` to an untracked root `.env`. Vite reads root client variables; the server deliberately reads the process environment. After `npm run build`, start an env-configured server from the root with `node --env-file=.env server/dist/src/index.js`. Never put TURN secrets in `VITE_*` values. A remote trial installer needs `VITE_SIGNALING_URL=wss://your-signaling-host` set **before** the client/Tauri build; the default installer connects to the local machine only.
+For configuration, copy `.env.example` to an untracked root `.env`. Vite reads root client variables; the server deliberately reads the process environment. After a server build, start an env-configured server from the root with `node --env-file=.env server/dist/src/index.js`. Never put TURN secrets in `VITE_*` values. A remote trial installer needs the verified public endpoint in `VITE_SIGNALING_URL` **before** the client/Tauri build; only the historical baseline installer defaults to the local machine.
+
+**Configuration change after the baseline build:** new production builds require
+an explicitly configured, real public `wss://` endpoint and reject localhost or
+missing configuration. Only Vite development mode retains the loopback default.
+There is no runtime endpoint configuration in the installed executable. Set the
+verified endpoint in `VITE_SIGNALING_URL`, then run `npm run build` and
+`npm run test:production`. The public `client/dist/talkie-build.json` records
+which endpoint was compiled; it contains no TURN credentials.
 
 ## Windows build
 
@@ -84,6 +91,7 @@ Outputs: `src-tauri/target/release/talkie.exe` and `src-tauri/target/release/bun
 - [Troubleshooting](docs/troubleshooting.md)
 - [Release audit, results and manual checklist](docs/release-audit.md)
 - [Wire protocol](server/PROTOCOL.md)
+- [Existing-host trial deployment and access blocker](docs/trial-deployment.md)
 
 ## Privacy boundary
 

@@ -16,7 +16,7 @@ Deploy signaling and coturn separately from the desktop client. Put WSS behind a
 - Node.js 22+; `npm ci`, `npm run build --workspace talkie-signaling-server`, then `npm start --workspace talkie-signaling-server`.
 - HTTPS/WSS with a valid certificate.
 - TURN over UDP plus TCP/TLS fallback; test TCP/TLS on port 443.
-- The current server forwards configured TURN username/password; it does not mint or refresh expiring credentials. Supply limited trial credentials, quotas, and expiry at coturn. Never commit them or log authenticated room acknowledgements.
+- Production TURN uses coturn REST time-limited credentials issued after room admission. The new `TURN_SHARED_SECRET` stays on the signaling/coturn servers; it is never embedded in the desktop app or returned in an acknowledgement. Keep coturn quotas and credentials out of logs. See `server/PROTOCOL.md` for lifetime limits.
 - Restricted `ALLOWED_ORIGINS`, rate limits, message-size limits, and redacted logs.
 - Firewall rules exposing only WSS and required TURN ports.
 
@@ -42,3 +42,17 @@ Do not call the deployment production-ready until direct, TURN-relayed, reconnec
 - Session/resume tokens live only in client memory and server hashes; application restart is a new identity. The floor is a hard maximum hold (default 30 seconds), not a renewable lease.
 - Plain WS is allowed in the desktop CSP only for local loopback development; WSS is required for remote endpoints. Set `VITE_SIGNALING_URL` before packaging, and restrict `connect-src wss:` to the deployment host when shipping a dedicated production build.
 - The service controls membership and speaking metadata, not encrypted P2P packets. A deliberately modified authorized client can bypass its own track mute; this is not a hostile-peer media moderation system.
+
+## Remote trial continuation
+
+See [trial-deployment.md](trial-deployment.md) for the verified configuration map,
+the existing-host-only budget rule, blocked SSH access, proposed ports, and
+read-only commands to run on the host. **No public Talkie deployment is currently
+verified.** A production build now refuses missing/insecure signaling URLs
+instead of silently embedding localhost.
+
+Windows CI separates a validation-only compile (with a clearly marked syntax
+fixture, never uploaded) from the candidate job. The latter requires the public
+repository variable `VITE_SIGNALING_URL`, validates HTTPS/WSS and room protocol,
+and then builds/uploads the installer, public build metadata, and checksums.
+Do not set that variable to an example domain, unverified URL, or server secret.

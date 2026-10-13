@@ -22,7 +22,7 @@ const escape = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'E
 const click = (element: Element) => element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 function button(container: Element, label: string) { return [...container.querySelectorAll('button')].find(node => node.textContent === label)!; }
 
-async function mount() {
+async function renderForm() {
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container); roots.push(root);
   await act(async () => root.render(<App />));
@@ -31,6 +31,10 @@ async function mount() {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Tester');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
+  return container;
+}
+async function mount() {
+  const container = await renderForm();
   await act(async () => click(button(container, 'Create room')));
   const socket = FakeSocket.instances.at(-1)!;
   await act(async () => socket.open());
@@ -55,6 +59,8 @@ async function talk(socket: FakeSocket, peer: FakePeer) {
 }
 
 beforeEach(() => {
+  vi.stubEnv('DEV', true);
+  vi.stubEnv('VITE_SIGNALING_URL', 'ws://127.0.0.1:8787');
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
@@ -64,10 +70,51 @@ afterEach(async () => {
   await act(async () => { roots.splice(0).forEach(root => root.unmount()); });
   document.body.replaceChildren();
   delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
-  vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks();
+  vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); vi.restoreAllMocks();
 });
 
 describe('mounted App → signaling → AudioSession sender safety', () => {
+  it.each([undefined, '', 'ws://127.0.0.1:8787', 'wss://localhost', 'wss://signal.example.com', 'malformed'])('blocks built-mode invalid config %s before connection or capture', async url => {
+    vi.stubEnv('DEV', false);
+    vi.stubEnv('VITE_SIGNALING_URL', url);
+    const container = await renderForm();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('VITE_SIGNALING_URL');
+    expect(button(container, 'Create room').disabled).toBe(true);
+    expect(button(container, 'Join room').disabled).toBe(true);
+    await act(async () => {
+      click(button(container, 'Create room'));
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(FakeSocket.instances).toHaveLength(0);
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+  });
+  it('shows actionable constructor failure without capturing a microphone', async () => {
+    vi.stubGlobal('WebSocket', class { constructor() { throw new DOMException('Blocked', 'SecurityError'); } });
+    const container = await renderForm();
+    await act(async () => click(button(container, 'Create room')));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Check VITE_SIGNALING_URL and browser security settings');
+    expect(container.textContent).toContain('closed');
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+  });
+  it('shows an unreachable endpoint error before any microphone capture', async () => {
+    const container = await renderForm();
+    await act(async () => click(button(container, 'Create room')));
+    await act(async () => FakeSocket.instances[0].onerror?.(new Event('error')));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Check your network');
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+  });
+  it('mutes existing transmission on connection loss and handles a throwing reconnect constructor', async () => {
+    const { container, socket, peer } = await start();
+    await talk(socket, peer);
+    vi.stubGlobal('WebSocket', class { constructor() { throw new Error('Connection blocked'); } });
+    await act(async () => socket.close());
+    expect(peer.track.enabled).toBe(false);
+    await act(async () => vi.advanceTimersByTime(1_000));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not start the signaling connection');
+    expect(peer.track.enabled).toBe(false);
+    expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('playback recovery does not open the microphone or request the floor', async () => {
     const { container, socket, peer } = await start();
     await act(async () => click(button(container, 'Enable audio')));
@@ -110,7 +157,7 @@ describe('mounted App → signaling → AudioSession sender safety', () => {
     expect(FakePeer.instances).toHaveLength(1);
     expect(media.getUserMedia).toHaveBeenCalledTimes(1);
   });
-  it('uses the packaged loopback URL and mutes synchronously on Space keyup before a throwing send', async () => {
+  it('uses the explicit development loopback URL and mutes synchronously on Space keyup before a throwing send', async () => {
     const { socket, peer } = await start();
     expect(socket.url).toBe('ws://127.0.0.1:8787');
     await talk(socket, peer);

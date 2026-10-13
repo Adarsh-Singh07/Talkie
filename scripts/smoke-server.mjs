@@ -9,10 +9,12 @@ probe.listen(0, '127.0.0.1');
 await once(probe, 'listening');
 const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
+const env = { ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port), ALLOWED_ORIGINS: 'http://tauri.localhost' };
+// Never inherit deployment TURN secrets for the local no-TURN startup test.
+for (const key of ['TURN_URL', 'TURN_USERNAME', 'TURN_CREDENTIAL', 'TURN_SHARED_SECRET', 'TURN_CREDENTIAL_TTL_SECONDS']) delete env[key];
 const child = spawn(process.execPath, ['server/dist/src/index.js'], {
   cwd: new URL('..', import.meta.url),
-  env: { ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port),
-    ALLOWED_ORIGINS: 'http://tauri.localhost', TURN_URL: '', TURN_USERNAME: '', TURN_CREDENTIAL: '' },
+  env,
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let stderr = '';

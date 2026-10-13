@@ -13,6 +13,34 @@ function setup() {
 }
 
 describe('versioned signaling', () => {
+  it.each(['create', 'join'] as const)('reports a constructor failure during %s without throwing or retrying', mode => {
+    vi.useFakeTimers();
+    const factory = vi.fn(() => { throw new Error('constructor rejected'); });
+    const client = new SignalingClient('ws://test', factory);
+    const events: SignalingEvent[] = [];
+    client.on(event => events.push(event));
+    expect(() => mode === 'create' ? client.create() : client.join('ABC123', 'secret')).not.toThrow();
+    expect(client.state).toBe('closed');
+    expect(events).toContainEqual({ type: 'error', code: 'signaling_start_failed' });
+    expect(client.currentEpoch).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(() => client.disconnect()).not.toThrow();
+  });
+  it('reports close-only failures and contains a constructor failure during reconnect', () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket('ws://test');
+    const factory = vi.fn().mockReturnValueOnce(socket).mockImplementation(() => { throw new Error('blocked'); });
+    const client = new SignalingClient('ws://test', factory);
+    const events: SignalingEvent[] = [];
+    client.on(event => events.push(event)); client.create();
+    socket.close();
+    expect(events).toContainEqual({ type: 'error', code: 'signaling_unavailable' });
+    expect(() => vi.advanceTimersByTime(1_000)).not.toThrow();
+    expect(events).toContainEqual({ type: 'error', code: 'signaling_start_failed' });
+    expect(client.state).toBe('closed');
+    expect(vi.getTimerCount()).toBe(0);
+    client.disconnect();
+  });
   it('recovers after repeated failed retries without losing private resume proof', () => {
     vi.useFakeTimers();
     const { client, socket, sockets, joined } = setup(); joined();

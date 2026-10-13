@@ -2,7 +2,7 @@
 
 ## Current status
 
-The reliability suite has 110 tests: 53 client (including 25 mounted React media-path integration cases) and 57 server. A separate real client/server signaling contract smoke runs over loopback. See [release-audit.md](release-audit.md) for actual results, failures fixed, artifacts, and the PASS/FAIL/BLOCKED/NOT TESTED checklist. The Windows workflow builds and uploads an unsigned installer; signing is not configured.
+The current suite has **204 tests**: 121 client (including 34 mounted React cases and 56 configuration cases) and 83 server. The original 110-test baseline is documented in [release-audit.md](release-audit.md). Current remote-trial status is in [trial-deployment.md](trial-deployment.md). A separate real client/server signaling contract runs over loopback. The Windows candidate job is now gated on a verified public endpoint; no validation-fixture build is uploaded.
 
 ## Required automated coverage
 
@@ -30,20 +30,30 @@ On two Windows clients test same-LAN and different-network calls, TURN relay, UD
 npm ci
 npm run typecheck
 npm test
-npm run build
 npm run test:contract
+npm run test:build-config
+npm run build --workspace talkie-signaling-server
 npm run test:production
 ```
 
-The native installer command is available only on a machine with Rust, the Windows SDK, WebView2, and the Tauri CLI:
+Production client and native builds require an actual public endpoint in
+`VITE_SIGNALING_URL`, in addition to Rust, the Windows SDK, WebView2 and Tauri CLI.
+`npm run test:build-config` proves the real Vite build rejects missing, insecure
+and local-TLS endpoints. CI also runs a validation-only compile with an explicit
+syntax fixture; it is never a release artifact.
 
 ```text
 npm run tauri -- info
+npm run verify:public
 npm run tauri -- build -- --locked
 npm run verify:windows
 ```
 
 CI must use deterministic mocks and must not print secrets.
+
+TURN tests verify HMAC-SHA1 credential generation, future expiry, TTL/room bounds,
+per-recipient freshness, admission checks, and shared-secret exclusion from all
+response payloads. They do not prove an external coturn allocation succeeds.
 
 ## Environment-bound verification
 

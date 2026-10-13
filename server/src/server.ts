@@ -2,12 +2,14 @@ import http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import { parseMessage, MAX_MESSAGE_BYTES } from "./protocol.js";
 import { RoomManager, type Participant, type Room, type Floor } from "./room-manager.js";
+import { issueIceServers, validateTurnRest, type IceServer, type TurnRestOptions } from "./ice.js";
 
-export interface IceServer { urls: string; username?: string; credential?: string; }
+export type { IceServer } from "./ice.js";
 export interface ServerOptions {
   host?: string; port?: number; allowedOrigins?: string[]; heartbeatIntervalMs?: number; heartbeatTimeoutMs?: number;
   maxMessageBytes?: number; roomTtlMs?: number; floorLeaseMs?: number; rateLimitWindowMs?: number; maxMessagesPerWindow?: number;
   maxSockets?: number; maxRooms?: number; maxIpEntries?: number; maxUpgradesPerWindow?: number; maxCreatesPerWindow?: number; maxJoinsPerWindow?: number; iceServers?: IceServer[];
+  turnRest?: TurnRestOptions;
 }
 
 function integerOption(name: string, value: number | undefined, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
@@ -31,6 +33,11 @@ function canonicalOrigin(value: string): string {
 export function createSignalingServer(options: ServerOptions = {}) {
   const maxMessageBytes = integerOption("maxMessageBytes", options.maxMessageBytes, MAX_MESSAGE_BYTES, 1, 1_048_576);
   const roomTtlMs = integerOption("roomTtlMs", options.roomTtlMs, 3_600_000, 1);
+  if (options.turnRest) {
+    validateTurnRest(options.turnRest, roomTtlMs);
+    if (options.iceServers?.some(ice => /^turns?:/.test(ice.urls) || ice.username !== undefined || ice.credential !== undefined)) throw new Error("Static and dynamic TURN cannot be mixed");
+  }
+  const iceServers = () => issueIceServers(options.iceServers ?? [], options.turnRest);
   const floorLeaseMs = integerOption("floorLeaseMs", options.floorLeaseMs, 30_000, 1);
   const heartbeatIntervalMs = integerOption("heartbeatIntervalMs", options.heartbeatIntervalMs, 15_000, 1);
   const heartbeatTimeoutMs = integerOption("heartbeatTimeoutMs", options.heartbeatTimeoutMs, heartbeatIntervalMs * 3, heartbeatIntervalMs + 1);
@@ -127,10 +134,10 @@ export function createSignalingServer(options: ServerOptions = {}) {
             ? manager.join(message.roomCode, message.invitationToken, participant, message.resumeToken)
             : manager.join(created!.room.code, created!.invitationToken, participant);
           state.roomCode = room.code; state.sessionId = message.sessionId; state.participant = participant;
-          send({ v: 1, type: created ? "created" : "joined", id, roomCode: room.code, ...(created ? { invitationToken: created.invitationToken } : {}), resumeToken, participantCount: room.participants.size, generation: participant.generation, iceServers: options.iceServers ?? [] });
+          send({ v: 1, type: created ? "created" : "joined", id, roomCode: room.code, ...(created ? { invitationToken: created.invitationToken } : {}), resumeToken, participantCount: room.participants.size, generation: participant.generation, iceServers: iceServers() });
           if (message.type === "join") {
             for (const peer of room.participants.values()) {
-              if (peer !== participant) peer.send({ v: 1, type: "joined", roomCode: room.code, participantCount: room.participants.size, generation: peer.generation, iceServers: options.iceServers ?? [] });
+              if (peer !== participant) peer.send({ v: 1, type: "joined", roomCode: room.code, participantCount: room.participants.size, generation: peer.generation, iceServers: iceServers() });
             }
           }
           if (replacedFloor) broadcast(room, { v: 1, type: "floor_released", sessionId: replacedFloor.sessionId, leaseId: replacedFloor.leaseId, epoch: replacedFloor.epoch });

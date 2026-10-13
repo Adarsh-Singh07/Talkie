@@ -9,53 +9,57 @@ permissions:
   contents: read
 
 jobs:
-  windows:
-    name: Test and bundle Windows x64 (unsigned)
+  checks:
+    name: Tests and validation-only production compile
     runs-on: windows-latest
-    timeout-minutes: 45
-
+    timeout-minutes: 15
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Test
-        run: npm test
-
-      - name: Real client/server protocol contract
-        run: npm run test:contract
-
-      - name: Build client and server
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:contract
+      - name: Verify missing and insecure release configuration fail
+        run: npm run test:build-config
+      - name: Compile only; this fixture is NOT a deployment or distributable
+        env:
+          VITE_SIGNALING_URL: wss://signal.talkie-validation-fixture.net/rooms
         run: npm run build
+      - run: npm run test:production
+      - name: Explain artifact gate
+        run: echo "Validation output is not published. Candidate job requires the VITE_SIGNALING_URL repository variable and a successful public TLS/WebSocket probe."
 
-      - name: Smoke-test built production server
-        run: npm run test:production
-
-      - name: Install pinned Rust toolchain
-        run: rustup show
-
-      - name: Native environment
-        run: npm run tauri -- info
-
-      - name: Bundle unsigned Windows installer
-        run: npm run tauri -- build -- --locked
-
-      - name: Verify PE architecture and checksums
-        run: npm run verify:windows
-
-      - name: Upload executable and installer
-        uses: actions/upload-artifact@v4
+  candidate:
+    name: Verified-endpoint unsigned Windows candidate
+    needs: checks
+    if: ${{ github.event_name != 'pull_request' && vars.VITE_SIGNALING_URL != '' }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # Public build-time setting only. Never pass server TURN/admin secrets here.
+      VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Verify public health, trusted TLS, WebSocket and room protocol
+        run: npm run verify:public
+      - run: rustup show
+      - run: npm run tauri -- info
+      - run: npm run tauri -- build -- --locked
+      - name: Record artifact checksums
+        shell: pwsh
+        run: |
+          node scripts/verify-windows.mjs | Tee-Object -FilePath artifact-checksums.jsonl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
         with:
           name: Talkie-Windows-x64-unsigned
           if-no-files-found: error
@@ -63,30 +67,5 @@ jobs:
           path: |
             src-tauri/target/release/talkie.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe
-
-      - name: Verify required files and directories
-        shell: pwsh
-        run: |
-          $requiredFiles = @(
-            'README.md',
-            '.env.example',
-            'docs/architecture-review.md',
-            'docs/deployment.md',
-            'docs/testing.md',
-            'docs/troubleshooting.md'
-          )
-          $requiredDirectories = @('client', 'server', 'src-tauri', 'docs')
-
-          foreach ($path in $requiredFiles) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Required file is missing: $path"
-            }
-          }
-
-          foreach ($path in $requiredDirectories) {
-            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
-              throw "Required directory is missing: $path"
-            }
-          }
-
-          Write-Host 'Talkie scaffold files and directories are present.'
+            client/dist/talkie-build.json
+            artifact-checksums.jsonl

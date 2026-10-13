@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "node:http";
 import WebSocket from "ws";
+import { createHmac } from "node:crypto";
+import * as ice from "../src/ice.js";
+import { optionsFromEnvironment } from "../src/index.js";
 import { createSignalingServer, type ServerOptions } from "../src/server.js";
 import { TestSocket, type Message } from "./websocket-harness.js";
 
@@ -61,6 +64,70 @@ async function barrier(socket: TestSocket, id: string) {
 }
 
 describe("signaling server", () => {
+  it("issues unique coturn REST credentials only for successful room acknowledgements", async () => {
+    const secret = "test-only-placeholder-not-a-real-secret";
+    const now = 1_800_000_000_123;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const issuance = vi.spyOn(ice, "issueIceServers");
+    const options = optionsFromEnvironment({
+      NODE_ENV: "production", ALLOWED_ORIGINS: "https://talkie.example",
+      STUN_URL: "stun:relay.example:3478",
+      TURN_URL: "turn:relay.example:3478?transport=udp,turns:relay.example:5349?transport=tcp",
+      TURN_SHARED_SECRET: secret,
+    });
+    const app = await start({ ...options, allowedOrigins: [] });
+    const a = await app.connect(); const b = await app.connect(); const attacker = await app.connect();
+    a.send({ v: 1, id: "create", type: "create", sessionId: "a", generation: 1 });
+    const created = await a.next();
+    expect(issuance).toHaveBeenCalledTimes(1);
+    for (const [id, overrides] of [
+      ["wrong-invitation", { invitationToken: "wrong" }],
+      ["missing-room", { roomCode: "ZZZZZZ" }],
+      ["stolen-identity", { sessionId: "a" }],
+    ] as const) {
+      attacker.send({ ...joinMessage(created, "attacker", 99, id), ...overrides });
+      const error = await attacker.next();
+      expect(error.type).toBe("error");
+      expect(error).not.toHaveProperty("iceServers");
+      expect(JSON.stringify(error)).not.toContain(secret);
+    }
+    expect(issuance).toHaveBeenCalledTimes(1);
+    await barrier(a, "no-peer-refresh-after-rejection");
+    b.send(joinMessage(created, "b", 7));
+    const joined = await b.next(); const peerRefresh = await a.next();
+    expect(issuance).toHaveBeenCalledTimes(3);
+    expect(peerRefresh).toMatchObject({ type: "joined", generation: 1 });
+    expect(peerRefresh).not.toHaveProperty("id");
+    const usernames: string[] = [];
+    for (const message of [created, joined, peerRefresh]) {
+      const servers = message.iceServers as ice.IceServer[];
+      expect(servers).toHaveLength(3);
+      expect(servers[0]).toEqual({ urls: "stun:relay.example:3478" });
+      const username = servers[1].username!;
+      expect(username).toMatch(/^1800003900:[0-9a-f]{32}$/);
+      expect(Number(username.split(":")[0])).toBe(Math.floor(now / 1000) + 3900);
+      const credential = createHmac("sha1", secret).update(username, "utf8").digest("base64");
+      expect(servers[1]).toEqual({ urls: "turn:relay.example:3478?transport=udp", username, credential });
+      expect(servers[2]).toEqual({ urls: "turns:relay.example:5349?transport=tcp", username, credential });
+      expect(JSON.stringify(message)).not.toContain(secret);
+      expect(JSON.stringify(message)).not.toContain("sharedSecret");
+      usernames.push(username);
+    }
+    expect(new Set(usernames).size).toBe(3);
+    attacker.send(joinMessage(created, "third", 0, "room-full"));
+    expect(await attacker.next()).toMatchObject({ type: "error", code: "room_full" });
+    expect(issuance).toHaveBeenCalledTimes(3);
+    await barrier(a, "still-no-ice"); await barrier(b, "peer-no-ice");
+    expect(issuance).toHaveBeenCalledTimes(3);
+  });
+
+  it("validates direct server TURN options before accepting connections", () => {
+    const turnRest = { urls: ["turn:relay.example"], sharedSecret: "test-only-placeholder-not-a-real-secret", ttlSeconds: 3900 };
+    expect(() => createSignalingServer({ turnRest: { ...turnRest, ttlSeconds: 3659 } })).toThrow(/TTL/);
+    expect(() => createSignalingServer({ turnRest: { ...turnRest, sharedSecret: "short" } })).toThrow(/SECRET/);
+    expect(() => createSignalingServer({ turnRest, iceServers: [{ urls: "turn:legacy.example", username: "user", credential: "pass" }] })).toThrow(/mixed/);
+  });
+
   it("echoes the requesting generation for rejected pre-join credentials", async () => {
     const app = await start(); const socket = await app.connect();
     socket.send({ v: 1, id: "bad-join", type: "join", roomCode: "ABC123", invitationToken: "wrong", sessionId: "new", generation: 9 });

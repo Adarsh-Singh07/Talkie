@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { AudioSession, type AudioDevices } from './lib/audio';
 import { SignalingClient, type SignalingEvent } from './lib/signaling';
 import { canAcceptFloorGrant, initialPttState, pttReducer, type PttEvent } from './lib/ptt';
+import { resolveSignalingConfig } from './lib/config';
 
 type Room = { displayName: string; roomCode: string; invitationToken: string; role: 'creator' | 'joiner' };
 type MediaContext = {
@@ -15,10 +16,10 @@ type MediaContext = {
   epoch?: number;
   cancelled: boolean;
 };
-const SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL ?? 'ws://127.0.0.1:8787';
 const monotonicNow = () => typeof performance !== 'undefined' ? performance.now() : Date.now();
 
 export default function App() {
+  const [config] = useState(() => resolveSignalingConfig(import.meta.env.VITE_SIGNALING_URL, import.meta.env.DEV));
   const [displayName, setDisplayName] = useState(''); const [roomCode, setRoomCode] = useState(''); const [invite, setInvite] = useState('');
   const [room, setRoom] = useState<Room | null>(null); const [error, setError] = useState(''); const [status, setStatus] = useState('Offline');
   const [ptt, setPtt] = useState(initialPttState); const [devices, setDevices] = useState<AudioDevices>({ inputs: [], outputs: [] });
@@ -153,9 +154,11 @@ export default function App() {
   useEffect(() => { if (ptt.phase === 'off') releaseActiveLease(); }, [ptt.phase]);
 
   async function enter(event: FormEvent, mode: 'create' | 'join') {
-    event.preventDefault(); setError(''); if (!displayName.trim() || (mode === 'join' && (!roomCode.trim() || !invite.trim()))) { setError('Enter your display name, room code, and invitation token.'); return; }
+    event.preventDefault();
+    if (!config.ok) { setError(config.error); return; }
+    setError(''); if (!displayName.trim() || (mode === 'join' && (!roomCode.trim() || !invite.trim()))) { setError('Enter your display name, room code, and invitation token.'); return; }
     releaseActiveLease(); pressed.current = false; dispatch({ type: 'leave' }); cancelMedia(); signaling.current?.disconnect(); signaling.current = undefined;
-    const client = new SignalingClient(SIGNALING_URL); signaling.current = client; setStatus('Connecting…');
+    const client = new SignalingClient(config.url); signaling.current = client; setStatus('Connecting…');
     client.on((message: SignalingEvent) => { const generation = client.currentGeneration; void onSignaling(message, mode, client, generation); });
     mode === 'create' ? client.create() : client.join(roomCode.trim().toUpperCase(), invite.trim());
   }
@@ -173,7 +176,7 @@ export default function App() {
       }
       return;
     }
-    if (message.type === 'error') { releaseActiveLease(client); pressed.current = false; cancelMedia(); setRemoteAudio(false); setRemoteSpeaking(false); setError(message.code); dispatch({ type: 'disconnect' }); return; }
+    if (message.type === 'error') { releaseActiveLease(client); pressed.current = false; cancelMedia(); setRemoteAudio(false); setRemoteSpeaking(false); setError(message.code === 'signaling_start_failed' ? 'Could not start the signaling connection. Check VITE_SIGNALING_URL and browser security settings, then try again.' : message.code === 'signaling_unavailable' ? 'Signaling server unavailable. Check your network and the configured signaling endpoint (including TLS); reconnecting automatically.' : message.code); dispatch({ type: 'disconnect' }); return; }
     if (message.type === 'floor_busy') { if (pendingRequest.current?.client !== client || message.id !== pendingRequest.current?.id) return; releaseActiveLease(); dispatch({ type: 'deny' }); setError('Someone else is speaking'); return; }
     if (message.type === 'floor_granted') {
       if (message.epoch !== mediaRef.current?.epoch) return;
@@ -342,10 +345,11 @@ export default function App() {
   function leave() { releaseActiveLease(); pressed.current = false; dispatch({ type: 'leave' }); cancelMedia(); signaling.current?.disconnect(); signaling.current = undefined; setRoom(null); setStatus('Offline'); setRemoteAudio(false); setRemoteSpeaking(false); }
 
      return <main className="shell"><header><div className="brand">TALKIE</div><span className={status === 'joined' ? 'status online' : 'status'}>● {status}</span></header>
+     {!config.ok && <p role="alert" className="error">{config.error}</p>}
      {room ? <section className="card room" aria-label="Room"><p className="eyebrow">PRIVATE ROOM · {room.role.toUpperCase()}</p><h1>{room.roomCode}</h1><p className="muted">Welcome, {room.displayName}. Share this room code and invitation token with one person.</p><div className="invite"><label htmlFor="invite">Invitation token</label><input id="invite" value={room.invitationToken} readOnly /><button className="secondary" type="button" onClick={() => void navigator.clipboard?.writeText(`talkie://join?room=${room.roomCode}&token=${encodeURIComponent(room.invitationToken)}`)}>Copy invitation</button></div>
         <ul className="readiness"><li>Signaling: {status}</li><li>Microphone: {ptt.phase === 'transmitting' ? 'transmitting' : ptt.micReady ? 'ready (muted)' : 'not ready'}</li><li>Peer connection: {remoteAudio ? 'connected' : 'waiting'}</li><li>Remote speaker: {remoteSpeaking ? 'speaking' : 'silent'}</li></ul>
         <button className="secondary" type="button" onClick={() => { void audio.current?.resumePlayback().catch(() => setError('Remote playback blocked. Check the output device and try Enable audio again.')); }}>Enable audio</button>
       <div className="devices"><label htmlFor="input-device">Microphone</label><select id="input-device" value={inputId} onChange={event => void changeInput(event.target.value)}><option value="">Default microphone</option>{devices.inputs.map(device => <option key={device.deviceId} value={device.deviceId}>{device.label || 'Microphone'}</option>)}</select><label htmlFor="output-device">Speaker</label><select id="output-device" value={outputId} onChange={event => void changeOutput(event.target.value)}><option value="">Default speaker</option>{devices.outputs.map(device => <option key={device.deviceId} value={device.deviceId}>{device.label || 'Speaker'}</option>)}</select></div>
        <div className="ptt-panel"><span className="ptt-label">PUSH TO TALK · {ptt.phase.toUpperCase()}</span><button className={`ptt ${ptt.phase === 'transmitting' ? 'active' : ''}`} disabled={!ptt.connected || !ptt.inRoom || !ptt.micReady || ptt.emergency} onPointerDown={() => press()} onPointerUp={() => release()} onPointerCancel={() => release()} onPointerLeave={() => release()} aria-describedby="ptt-help">{ptt.phase === 'transmitting' ? 'Speaking' : 'Hold to talk'}</button><small id="ptt-help">Microphone stays muted until the server grants the floor. Esc or focus loss stops transmission.</small><button className="secondary" onClick={() => { release(); dispatch({ type: ptt.emergency ? 'clear-emergency' : 'emergency' }); }}>{ptt.emergency ? 'Clear emergency stop' : 'Emergency stop · Esc'}</button></div>{error && <p role="alert" className="error">{error}</p>}<button className="link-button" onClick={leave}>Leave room</button>
-    </section> : <section className="card"><p className="eyebrow">PRIVATE VOICE ROOMS</p><h1>Talk when it matters.</h1><p className="muted">Create a room or join with an invitation token. Audio is peer-to-peer and never recorded.</p><form onSubmit={event => void enter(event, 'join')}><label htmlFor="display-name">Display name</label><input id="display-name" value={displayName} onChange={event => setDisplayName(event.target.value)} maxLength={40} placeholder="Your name" required /><label htmlFor="room-code">Room code <span className="optional">for join</span></label><input id="room-code" value={roomCode} onChange={event => setRoomCode(event.target.value)} maxLength={6} placeholder="ABC123" autoComplete="off" /><label htmlFor="join-token">Invitation token <span className="optional">for join</span></label><input id="join-token" value={invite} onChange={event => setInvite(event.target.value)} placeholder="Private invitation token" autoComplete="off" />{error && <p role="alert" className="error">{error}</p>}<div className="actions"><button className="primary" type="button" onClick={event => void enter(event, 'create')}>Create room</button><button className="secondary" type="submit">Join room</button></div></form></section>}<footer>Peer-to-peer audio <span>•</span> No recording</footer></main>;
+    </section> : <section className="card"><p className="eyebrow">PRIVATE VOICE ROOMS</p><h1>Talk when it matters.</h1><p className="muted">Create a room or join with an invitation token. Audio is peer-to-peer and never recorded.</p><form onSubmit={event => void enter(event, 'join')}><label htmlFor="display-name">Display name</label><input id="display-name" value={displayName} onChange={event => setDisplayName(event.target.value)} maxLength={40} placeholder="Your name" required /><label htmlFor="room-code">Room code <span className="optional">for join</span></label><input id="room-code" value={roomCode} onChange={event => setRoomCode(event.target.value)} maxLength={6} placeholder="ABC123" autoComplete="off" /><label htmlFor="join-token">Invitation token <span className="optional">for join</span></label><input id="join-token" value={invite} onChange={event => setInvite(event.target.value)} placeholder="Private invitation token" autoComplete="off" />{error && <p role="alert" className="error">{error}</p>}<div className="actions"><button className="primary" type="button" disabled={!config.ok} onClick={event => void enter(event, 'create')}>Create room</button><button className="secondary" type="submit" disabled={!config.ok}>Join room</button></div></form></section>}<footer>Peer-to-peer audio <span>•</span> No recording</footer></main>;
 }

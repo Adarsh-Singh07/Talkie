@@ -1,5 +1,10 @@
 # Windows MVP reliability audit and build report
 
+**Historical baseline: commit `adcad3d`.** The results and artifact hashes below
+describe that local-loopback build. Current remote-trial changes and deployment
+blockers are tracked in [trial-deployment.md](trial-deployment.md); do not mistake
+this historical installer for a verified public-endpoint candidate.
+
 ## Decision: NOT READY for a remote two-person voice trial yet
 
 The code/build work is verified below; this is **not** a claim that physical

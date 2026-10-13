@@ -56,7 +56,9 @@ try {
   a.client.sendSignal('offer', 'fresh-epoch-offer', 3);
   await until(() => b.events.some(event => event.type === 'signal' && event.payload === 'fresh-epoch-offer'), 'resumed offer');
   const errors = [...a.events, ...b.events].filter(event => event.type === 'error');
-  assert.deepEqual(errors, []);
+  // Three intentional socket drops produce actionable connection-loss events.
+  assert.equal(errors.length, 3);
+  assert.ok(errors.every(event => event.code === 'signaling_unavailable'));
   console.log('PASS: real SignalingClient ↔ ws server create/join, floor, peer-drop, both-drop, resume tokens, independent generations, and epoch isolation.');
 } finally {
   a.client.disconnect(); b.client.disconnect(); await server.close();

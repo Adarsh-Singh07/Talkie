@@ -13,6 +13,8 @@
     "tauri": "tauri",
     "test:production": "node scripts/smoke-server.mjs",
     "test:contract": "node --import tsx scripts/smoke-signaling.mjs",
+    "test:build-config": "node scripts/test-build-config.mjs",
+    "verify:public": "node --import tsx scripts/probe-public.mjs",
     "verify:windows": "node scripts/verify-windows.mjs"
   },
   "devDependencies": {

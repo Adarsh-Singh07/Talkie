@@ -50,7 +50,17 @@ export class SignalingClient {
     this.epoch = undefined;
     this.readyGeneration = undefined;
     this.setState('connecting');
-    const socket = this.socket = this.socketFactory(this.url);
+    this.socket = undefined;
+    let socket: SocketLike;
+    try { socket = this.socket = this.socketFactory(this.url); }
+    catch {
+      // Invalid URLs and browser security restrictions can throw synchronously.
+      // No socket exists to deliver an error/close callback in this case.
+      this.stopped = true;
+      this.setState('closed');
+      this.emit({ type: 'error', code: 'signaling_start_failed' });
+      return;
+    }
     socket.onopen = () => {
       if (generation !== this.generation || this.stopped) return;
       this.setState('connected');
@@ -69,6 +79,7 @@ export class SignalingClient {
     };
     socket.onclose = () => {
       if (generation !== this.generation || this.stopped) return;
+      this.emit({ type: 'error', code: 'signaling_unavailable' });
       this.setState('idle');
       this.epoch = undefined;
       this.readyGeneration = undefined;
