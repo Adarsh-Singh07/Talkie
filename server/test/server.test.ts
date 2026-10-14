@@ -4,7 +4,7 @@ import WebSocket from "ws";
 import { createHmac } from "node:crypto";
 import * as ice from "../src/ice.js";
 import { optionsFromEnvironment } from "../src/index.js";
-import { createSignalingServer, type ServerOptions } from "../src/server.js";
+import { canonicalOrigin, createSignalingServer, rateLimitClientIp, type ServerOptions } from "../src/server.js";
 import { TestSocket, type Message } from "./websocket-harness.js";
 
 const running: ReturnType<typeof createSignalingServer>[] = [];
@@ -64,6 +64,59 @@ async function barrier(socket: TestSocket, id: string) {
 }
 
 describe("signaling server", () => {
+  it("canonicalizes http, https, and tauri localhost origins and trusts a single Cloudflare IP only behind loopback", () => {
+    expect(canonicalOrigin("http://localhost:80/")).toBe("http://localhost");
+    expect(canonicalOrigin("https://localhost:443")).toBe("https://localhost");
+    expect(canonicalOrigin("tauri://localhost/")).toBe("tauri://localhost");
+    const request = (remoteAddress: string, header?: string | string[]) => ({ socket: { remoteAddress }, headers: { "cf-connecting-ip": header } }) as unknown as http.IncomingMessage;
+    expect(rateLimitClientIp(request("127.0.0.1", "203.0.113.4"))).toBe("203.0.113.4");
+    expect(rateLimitClientIp(request("::ffff:127.0.0.1", "2001:db8::4"))).toBe("2001:db8::4");
+    expect(rateLimitClientIp(request("127.0.0.1", "203.0.113.4, 203.0.113.5"))).toBe("127.0.0.1");
+    expect(rateLimitClientIp(request("203.0.113.10", "198.51.100.5"))).toBe("203.0.113.10");
+  });
+
+  it("uses Cloudflare ICE entries after async admission and falls back without exposing API secrets", async () => {
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const apiToken = "cloudflare-api-token";
+    const fetchImpl = vi.fn(() => new Promise<Response>(resolve => { resolveFetch = resolve; }));
+    const app = await start({ cloudflareTurn: { keyId: "key-id", apiToken, fetch: fetchImpl } });
+    const socket = await app.connect();
+    socket.send({ v: 1, id: "create", type: "create", sessionId: "cf-a", generation: 1 });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    resolveFetch!(new Response(JSON.stringify({ iceServers: [{ urls: ["turn:turn.cloudflare.com:53?transport=tcp", "turn:turn.cloudflare.com:3478?transport=udp"], username: "cf-user", credential: "cf-secret" }] }), { status: 200 }));
+    const created = await socket.next();
+    expect(created.iceServers).toEqual([
+      { urls: "turn:turn.cloudflare.com:3478?transport=udp", username: "cf-user", credential: "cf-secret" },
+      { urls: "turn:turn.cloudflare.com:3478?transport=tcp", username: "cf-user", credential: "cf-secret" },
+      { urls: "turns:turn.cloudflare.com:5349?transport=tcp", username: "cf-user", credential: "cf-secret" },
+    ]);
+    expect(JSON.stringify(created)).not.toContain(apiToken);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to configured coturn or STUN when Cloudflare credential generation fails", async () => {
+    const fetchImpl = vi.fn(async () => new Response("upstream unavailable", { status: 503 }));
+    const app = await start({
+      cloudflareTurn: { keyId: "key-id", apiToken: "api-token", fetch: fetchImpl },
+      iceServers: [{ urls: "stun:fallback.example:3478" }],
+    });
+    const socket = await app.connect();
+    socket.send({ v: 1, id: "create", type: "create", sessionId: "fallback", generation: 1 });
+    expect(await socket.next()).toMatchObject({ type: "created", iceServers: [{ urls: "stun:fallback.example:3478" }] });
+  });
+
+  it("does not send an asynchronous admission acknowledgement after disconnect", async () => {
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const fetchImpl = vi.fn(() => new Promise<Response>(resolve => { resolveFetch = resolve; }));
+    const app = await start({ cloudflareTurn: { keyId: "key-id", apiToken: "api-token", fetch: fetchImpl } });
+    const socket = await app.connect();
+    socket.send({ v: 1, id: "create", type: "create", sessionId: "departed", generation: 1 });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+    socket.close(); await socket.closed;
+    resolveFetch!(new Response(JSON.stringify({ iceServers: [{ urls: "turn:turn.cloudflare.com:3478", username: "u", credential: "c" }] }), { status: 200 }));
+    await vi.waitFor(() => expect(app.signaling.manager.size()).toBe(1));
+  });
+
   it("issues unique coturn REST credentials only for successful room acknowledgements", async () => {
     const secret = "test-only-placeholder-not-a-real-secret";
     const now = 1_800_000_000_123;

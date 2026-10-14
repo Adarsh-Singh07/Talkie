@@ -64,6 +64,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true });
+  window.localStorage.clear();
   media = installMediaFakes(); native.clear();
 });
 afterEach(async () => {
@@ -74,6 +75,42 @@ afterEach(async () => {
 });
 
 describe('mounted App → signaling → AudioSession sender safety', () => {
+  it('saves, uses, and resets the runtime signaling URL from lobby Server Settings', async () => {
+    const container = await renderForm();
+    await act(async () => click(container.querySelector('summary')!));
+    const input = container.querySelector<HTMLInputElement>('#signaling-url')!;
+    expect(input.value).toBe('ws://127.0.0.1:8787');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'wss://signal.talkie-validation-fixture.net/rooms');
+    await act(async () => input.dispatchEvent(new Event('input', { bubbles: true })));
+    await act(async () => click(button(container, 'Save')));
+    expect(window.localStorage.getItem('talkie.signalingUrl')).toBe('wss://signal.talkie-validation-fixture.net/rooms');
+    await act(async () => click(button(container, 'Reset')));
+    expect(window.localStorage.getItem('talkie.signalingUrl')).toBeNull();
+    expect(input.value).toBe('ws://127.0.0.1:8787');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'wss://signal.talkie-validation-fixture.net/rooms');
+    await act(async () => input.dispatchEvent(new Event('input', { bubbles: true })));
+    await act(async () => click(button(container, 'Save')));
+    await act(async () => click(button(container, 'Create room')));
+    expect(FakeSocket.instances.at(-1)?.url).toBe('wss://signal.talkie-validation-fixture.net/rooms');
+    expect(container.querySelector('[role="alert"]')?.textContent ?? '').not.toContain('configuration error');
+  });
+
+  it('keeps a global shortcut transmission through blur and hidden until native release', async () => {
+    const { container, socket, peer } = await start();
+    await act(async () => nativeEvent('shortcut://pressed'));
+    await act(async () => grant(socket));
+    expect(peer.track.enabled).toBe(true);
+    await act(async () => {
+      window.dispatchEvent(new Event('blur'));
+      vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(peer.track.enabled).toBe(true);
+    await act(async () => nativeEvent('shortcut://released'));
+    expect(peer.track.enabled).toBe(false);
+    expect(container.textContent).toContain('PUSH TO TALK · OFF');
+  });
+
   it.each([undefined, '', 'ws://127.0.0.1:8787', 'wss://localhost', 'wss://signal.example.com', 'malformed'])('blocks built-mode invalid config %s before connection or capture', async url => {
     vi.stubEnv('DEV', false);
     vi.stubEnv('VITE_SIGNALING_URL', url);

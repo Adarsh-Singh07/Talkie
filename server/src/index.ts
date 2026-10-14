@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { createSignalingServer, type ServerOptions, type IceServer } from "./server.js";
-import { validateIceUrl, validateTurnRest, type TurnRestOptions } from "./ice.js";
+import { validateIceUrl, validateTurnRest, type CloudflareTurnOptions, type TurnRestOptions } from "./ice.js";
 
 export function optionsFromEnvironment(env: NodeJS.ProcessEnv): ServerOptions {
   const positive = (key: string, fallback: number, max: number) => {
@@ -15,6 +15,12 @@ export function optionsFromEnvironment(env: NodeJS.ProcessEnv): ServerOptions {
     if (!["http:", "https:", "tauri:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "" && parsed.pathname !== "/") || origin.endsWith("/")) throw new Error("Invalid ALLOWED_ORIGINS");
   }
   if (env.NODE_ENV === "production" && !allowedOrigins.length) throw new Error("ALLOWED_ORIGINS is required in production");
+  const cloudflareConfigured = env.CF_TURN_KEY_ID !== undefined || env.CF_TURN_API_TOKEN !== undefined;
+  let cloudflareTurn: CloudflareTurnOptions | undefined;
+  if (cloudflareConfigured) {
+    if (!env.CF_TURN_KEY_ID?.trim() || !env.CF_TURN_API_TOKEN?.trim() || env.CF_TURN_KEY_ID.length > 512 || env.CF_TURN_API_TOKEN.length > 4096) throw new Error("CF_TURN_KEY_ID and CF_TURN_API_TOKEN are required together");
+    cloudflareTurn = { keyId: env.CF_TURN_KEY_ID, apiToken: env.CF_TURN_API_TOKEN };
+  }
   const iceServers: IceServer[] = [];
   const roomTtlMs = positive("ROOM_TTL_SECONDS", 3600, 604800) * 1000;
   if (env.STUN_URL) iceServers.push({ urls: validateIceUrl(env.STUN_URL, "STUN_URL") });
@@ -38,6 +44,7 @@ export function optionsFromEnvironment(env: NodeJS.ProcessEnv): ServerOptions {
   if (env.HOST !== undefined && !env.HOST.trim()) throw new Error("Invalid HOST");
   return {
     host: env.HOST ?? "127.0.0.1", port: positive("PORT", 8787, 65535), allowedOrigins, iceServers, turnRest,
+    cloudflareTurn,
     heartbeatIntervalMs, heartbeatTimeoutMs, maxMessageBytes: positive("MAX_MESSAGE_BYTES", 65536, 1048576),
     roomTtlMs, floorLeaseMs: positive("FLOOR_LEASE_SECONDS", 30, 3600) * 1000,
     rateLimitWindowMs: positive("RATE_LIMIT_WINDOW_SECONDS", 10, 3600) * 1000, maxMessagesPerWindow: positive("MAX_MESSAGES_PER_WINDOW", 100, 100000),

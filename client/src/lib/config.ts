@@ -1,7 +1,34 @@
 export type SignalingConfig = { ok: true; url: string } | { ok: false; error: string };
 
-const developmentUrl = 'ws://127.0.0.1:8787';
+export const signalingUrlStorageKey = 'talkie.signalingUrl';
+export const developmentSignalingUrl = 'ws://127.0.0.1:8787';
 const guidance = 'Set VITE_SIGNALING_URL to the real public wss:// signaling endpoint and rebuild the client.';
+
+export type SignalingStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+function browserStorage(): SignalingStorage | undefined {
+  try { return typeof localStorage === 'undefined' ? undefined : localStorage; } catch { return undefined; }
+}
+
+export function getSignalingUrlOverride(storage: Pick<Storage, 'getItem'> | undefined = browserStorage()): string | undefined {
+  try {
+    const value = storage?.getItem(signalingUrlStorageKey)?.trim();
+    return value || undefined;
+  } catch { return undefined; }
+}
+
+export function saveSignalingUrlOverride(value: string, storage: SignalingStorage | undefined = browserStorage()): boolean {
+  try {
+    const trimmed = value.trim();
+    if (trimmed) storage?.setItem(signalingUrlStorageKey, trimmed);
+    else storage?.removeItem(signalingUrlStorageKey);
+    return Boolean(storage);
+  } catch { return false; }
+}
+
+export function resetSignalingUrlOverride(storage: SignalingStorage | undefined = browserStorage()): boolean {
+  try { storage?.removeItem(signalingUrlStorageKey); return Boolean(storage); } catch { return false; }
+}
 
 function publicHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, '');
@@ -32,10 +59,10 @@ function publicHost(hostname: string): boolean {
 }
 
 /** Pure syntax/policy validation; it cannot verify DNS, TLS or server deployment. */
-export function resolveSignalingConfig(value: string | undefined, development: boolean): SignalingConfig {
-  const raw = value?.trim();
+export function resolveSignalingConfig(value: string | undefined, development: boolean, storage?: Pick<Storage, 'getItem'>): SignalingConfig {
+  const raw = getSignalingUrlOverride(storage)?.trim() ?? value?.trim();
   const fail = (reason: string): SignalingConfig => ({ ok: false, error: `Signaling configuration error: ${reason} ${guidance}` });
-  if (!raw) return development ? { ok: true, url: developmentUrl } : fail('VITE_SIGNALING_URL is missing.');
+  if (!raw) return development ? { ok: true, url: developmentSignalingUrl } : fail('VITE_SIGNALING_URL is missing.');
   let url: URL;
   try { url = new URL(raw); } catch { return fail('VITE_SIGNALING_URL must be an absolute WebSocket URL.'); }
   if (!/^wss?:\/\//i.test(raw) || /[\s\\]/.test(raw) || !['ws:', 'wss:'].includes(url.protocol)) return fail('Use a ws:// or wss:// WebSocket URL.');

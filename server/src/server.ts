@@ -1,15 +1,16 @@
 import http from "node:http";
+import { isIP } from "node:net";
 import { WebSocketServer, WebSocket } from "ws";
 import { parseMessage, MAX_MESSAGE_BYTES } from "./protocol.js";
 import { RoomManager, type Participant, type Room, type Floor } from "./room-manager.js";
-import { issueIceServers, validateTurnRest, type IceServer, type TurnRestOptions } from "./ice.js";
+import { createCloudflareTurnProvider, issueIceServers, validateTurnRest, type CloudflareTurnOptions, type IceServer, type TurnRestOptions } from "./ice.js";
 
 export type { IceServer } from "./ice.js";
 export interface ServerOptions {
   host?: string; port?: number; allowedOrigins?: string[]; heartbeatIntervalMs?: number; heartbeatTimeoutMs?: number;
   maxMessageBytes?: number; roomTtlMs?: number; floorLeaseMs?: number; rateLimitWindowMs?: number; maxMessagesPerWindow?: number;
   maxSockets?: number; maxRooms?: number; maxIpEntries?: number; maxUpgradesPerWindow?: number; maxCreatesPerWindow?: number; maxJoinsPerWindow?: number; iceServers?: IceServer[];
-  turnRest?: TurnRestOptions;
+  turnRest?: TurnRestOptions; cloudflareTurn?: CloudflareTurnOptions;
 }
 
 function integerOption(name: string, value: number | undefined, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
@@ -18,9 +19,10 @@ function integerOption(name: string, value: number | undefined, fallback: number
   return result;
 }
 
-function canonicalOrigin(value: string): string {
+export function canonicalOrigin(value: string): string {
   try {
     const parsed = new URL(value);
+    if (!["http:", "https:", "tauri:"].includes(parsed.protocol)) return value;
     if (parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname !== "" && parsed.pathname !== "/")) return value;
     let host = parsed.host;
     if ((parsed.protocol === "http:" && parsed.port === "80") || (parsed.protocol === "https:" && parsed.port === "443")) host = parsed.hostname;
@@ -28,6 +30,22 @@ function canonicalOrigin(value: string): string {
   } catch {
     return value;
   }
+}
+
+function isLoopback(address: string): boolean {
+  const value = address.toLowerCase();
+  return value === "::1" || value === "127.0.0.1" || value.startsWith("127.") || value.startsWith("::ffff:127.");
+}
+
+/** Trust Cloudflare's client IP only when Node is directly behind a loopback proxy. */
+export function rateLimitClientIp(request: http.IncomingMessage): string {
+  const remote = request.socket.remoteAddress ?? "unknown";
+  const header = request.headers["cf-connecting-ip"];
+  if (isLoopback(remote) && typeof header === "string") {
+    const candidate = header.trim();
+    if (candidate && !candidate.includes(",") && isIP(candidate)) return candidate;
+  }
+  return remote;
 }
 
 export function createSignalingServer(options: ServerOptions = {}) {
@@ -50,6 +68,7 @@ export function createSignalingServer(options: ServerOptions = {}) {
   const maxCreatesPerWindow = integerOption("maxCreatesPerWindow", options.maxCreatesPerWindow, 20, 0);
   const maxJoinsPerWindow = integerOption("maxJoinsPerWindow", options.maxJoinsPerWindow, 60, 0);
   const allowedOrigins = options.allowedOrigins?.map(canonicalOrigin);
+  const cloudflareTurn = options.cloudflareTurn ? createCloudflareTurnProvider(options.cloudflareTurn) : undefined;
   const manager = new RoomManager(roomTtlMs, () => Date.now(), floorLeaseMs, maxRooms);
   const server = http.createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
@@ -74,7 +93,7 @@ export function createSignalingServer(options: ServerOptions = {}) {
   }
   server.on("upgrade", (request, socket, head) => {
     const origin = request.headers.origin;
-    if ((allowedOrigins?.length && (!origin || !allowedOrigins.includes(canonicalOrigin(origin)))) || wss.clients.size >= maxSockets || !spend(request.socket.remoteAddress ?? "unknown", "upgrade")) { socket.destroy(); return; }
+    if ((allowedOrigins?.length && (!origin || !allowedOrigins.includes(canonicalOrigin(origin)))) || wss.clients.size >= maxSockets || !spend(rateLimitClientIp(request), "upgrade")) { socket.destroy(); return; }
     try {
       wss.handleUpgrade(request, socket, head, ws => wss.emit("connection", ws, request));
     } catch {
@@ -107,7 +126,11 @@ export function createSignalingServer(options: ServerOptions = {}) {
     ws.on("close", cleanup);
     ws.on("error", () => { cleanup(); ws.terminate(); });
     ws.on("pong", () => { state.lastPongAt = Date.now(); });
+    let messageQueue = Promise.resolve();
     ws.on("message", (raw, isBinary) => {
+      messageQueue = messageQueue.then(() => handleMessage(raw, isBinary)).catch(() => undefined);
+    });
+    async function handleMessage(raw: string | Buffer | ArrayBuffer | Buffer[], isBinary: boolean): Promise<void> {
       if (state.cleaned) return;
       let id: string | undefined;
       let requestGeneration: number | undefined;
@@ -127,17 +150,21 @@ export function createSignalingServer(options: ServerOptions = {}) {
         if (message.type === "ping") { send({ v: 1, type: "pong", id }); return; }
         if (message.type === "create" || message.type === "join") {
           if (state.roomCode) throw new Error("already_joined");
-          if (!spend(request.socket.remoteAddress ?? "unknown", message.type)) throw new Error("rate_limited");
+          if (!spend(rateLimitClientIp(request), message.type)) throw new Error("rate_limited");
           const participant: Participant = { sessionId: message.sessionId, generation: message.generation, send, close: reason => { cleanup(); ws.close(1000, reason); } };
           const created = message.type === "create" ? manager.create() : undefined;
           const { room, resumeToken, replacedFloor } = message.type === "join"
             ? manager.join(message.roomCode, message.invitationToken, participant, message.resumeToken)
             : manager.join(created!.room.code, created!.invitationToken, participant);
           state.roomCode = room.code; state.sessionId = message.sessionId; state.participant = participant;
-          send({ v: 1, type: created ? "created" : "joined", id, roomCode: room.code, ...(created ? { invitationToken: created.invitationToken } : {}), resumeToken, participantCount: room.participants.size, generation: participant.generation, iceServers: iceServers() });
+          const admissionIceServers = cloudflareTurn ? [...(await cloudflareTurn.getIceServers())] : issueIceServers(options.iceServers ?? [], options.turnRest);
+          if (state.cleaned || state.participant !== participant || room.participants.get(participant.sessionId) !== participant) return;
+          send({ v: 1, type: created ? "created" : "joined", id, roomCode: room.code, ...(created ? { invitationToken: created.invitationToken } : {}), resumeToken, participantCount: room.participants.size, generation: participant.generation, iceServers: admissionIceServers.length ? admissionIceServers : issueIceServers(options.iceServers ?? [], options.turnRest) });
           if (message.type === "join") {
+            const peerIceServers = cloudflareTurn ? [...(await cloudflareTurn.getIceServers())] : issueIceServers(options.iceServers ?? [], options.turnRest);
+            if (state.cleaned || state.participant !== participant || room.participants.get(participant.sessionId) !== participant) return;
             for (const peer of room.participants.values()) {
-              if (peer !== participant) peer.send({ v: 1, type: "joined", roomCode: room.code, participantCount: room.participants.size, generation: peer.generation, iceServers: iceServers() });
+              if (peer !== participant) peer.send({ v: 1, type: "joined", roomCode: room.code, participantCount: room.participants.size, generation: peer.generation, iceServers: peerIceServers.length ? peerIceServers : issueIceServers(options.iceServers ?? [], options.turnRest) });
             }
           }
           if (replacedFloor) broadcast(room, { v: 1, type: "floor_released", sessionId: replacedFloor.sessionId, leaseId: replacedFloor.leaseId, epoch: replacedFloor.epoch });
@@ -179,7 +206,7 @@ export function createSignalingServer(options: ServerOptions = {}) {
           broadcast(room, { v: 1, type: "speaking", id, sessionId: floor.sessionId, leaseId: floor.leaseId, epoch: floor.epoch, speaking: floor.speaking });
         }
       } catch (error) { send({ v: 1, type: "error", id, generation: requestGeneration ?? state.participant?.generation, epoch: requestEpoch, code: error instanceof Error ? error.message : "invalid_message" }); }
-    });
+    }
   });
   const timer = setInterval(() => {
     const now = Date.now(); pruneBudgets(now);

@@ -49,11 +49,19 @@ npm run tauri -- build -- --locked
 npm run verify:windows
 ```
 
+For a public probe with Cloudflare Realtime TURN, provide both
+`CF_TURN_KEY_ID` and `CF_TURN_API_TOKEN` only through the process environment.
+The probe then validates the Cloudflare credential response and requires a
+credentialed TURN entry from the public room; it never prints either value and
+does not claim that a media allocation succeeded. Supplying neither variable
+leaves the probe at its normal direct/STUN-or-configured-TURN checks.
+
 CI must use deterministic mocks and must not print secrets.
 
 TURN tests verify HMAC-SHA1 credential generation, future expiry, TTL/room bounds,
 per-recipient freshness, admission checks, and shared-secret exclusion from all
-response payloads. They do not prove an external coturn allocation succeeds.
+response payloads. The optional public probe can validate Cloudflare credential
+issuance, but neither path proves an external TURN allocation succeeds.
 
 ## Environment-bound verification
 

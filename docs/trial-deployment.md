@@ -22,11 +22,11 @@ No public signaling endpoint or live TURN relay can be claimed.
 
 | Purpose | Exact setting/path | Behavior |
 | --- | --- | --- |
-| Desktop signaling URL | `VITE_SIGNALING_URL`; `client/src/lib/config.ts`, `App.tsx` | Compiled by Vite, **not runtime configurable** in the installer |
+| Desktop signaling URL | `VITE_SIGNALING_URL`; `client/src/lib/config.ts`, `App.tsx` | Compiled by Vite; the installed lobby also permits a validated local-storage runtime override in Server Settings |
 | Vite env loading | `client/vite.config.ts`, `envDir: '..'` | Root `.env`, mode-specific Vite env files, or process environment; process env takes precedence |
-| Production enforcement | `resolveSignalingConfig` in `client/src/lib/config.ts` | Builds require explicit public WSS; missing, blank, WS, local/private/reserved IPs, placeholder domains, userinfo and fragments rejected; runtime error also blocks create/join |
+| Production enforcement | `resolveSignalingConfig` in `client/src/lib/config.ts` | Builds require explicit public WSS; missing, blank, WS, local/private/reserved IPs, placeholder domains, userinfo and fragments rejected; runtime overrides use the same validation and errors block create/join |
 | Development | Vite dev mode | Missing URL uses `ws://127.0.0.1:8787`; this fallback is never used in a packaged production build |
-| Public build record | `client/dist/talkie-build.json` | Emitted public endpoint and build-time configuration marker; no TURN secrets |
+| Public build record | `client/dist/talkie-build.json` | Emitted public endpoint and build-time configuration marker; no TURN secrets. A runtime override is local state and is not rewritten into this file |
 | Desktop network policy | `src-tauri/tauri.conf.json`, `app.security.csp` | WSS allowed; local WS limited to loopback; IPC and media allowed. Narrow WSS to actual deployment host when it becomes known |
 | Node binding | `HOST`, `PORT` in `server/src/index.ts` | Defaults loopback:8787. Node itself serves HTTP/WS, not TLS |
 | Production/origins | `NODE_ENV=production`, `ALLOWED_ORIGINS` | Nonempty exact origins required; Windows packaged origin is `http://tauri.localhost`; not a substitute for room authorization |
@@ -34,6 +34,7 @@ No public signaling endpoint or live TURN relay can be claimed.
 | STUN | `STUN_URL` | Optional single URI from server process env; `.env.example` lists Google's public STUN, but Node has no implicit STUN default |
 | TURN endpoints | `TURN_URL` | Comma-separated validated `turn:`/`turns:` URIs; actual listener and firewall must exist |
 | Temporary TURN signing | **New:** `TURN_SHARED_SECRET` | At least 32 UTF-8 bytes; server/coturn only; never a `VITE_*` value or client response |
+| Cloudflare Realtime TURN | `CF_TURN_KEY_ID`, `CF_TURN_API_TOKEN` | Optional server-only credentials; the public probe validates them only when both are supplied and never logs either value |
 | Temporary TURN lifetime | **New:** `TURN_CREDENTIAL_TTL_SECONDS` | Default 3900; at least room TTL + 60, at most 86400 seconds |
 | Legacy static TURN | `TURN_USERNAME`, `TURN_CREDENTIAL` | Development only; rejected in production or mixed with dynamic settings |
 | ICE delivery | `server/src/ice.ts` → authenticated room acknowledgements → `App.tsx` → `AudioSession` | Existing `iceServers` array passed into `RTCPeerConnection`; room/floor/negotiation protocol unchanged |
@@ -145,11 +146,15 @@ management path, not credentials.
    npm run verify:public -- --require-turn
    ```
 
-   The probe checks issuance structure/expiry, not real TURN allocation or audio.
-6. Only then set the repository's public `VITE_SIGNALING_URL` variable to that
-   verified endpoint and run the existing Windows workflow. Do not place any
-   server-side secret in that variable. The candidate job checks public health/
-   WSS before bundling and includes `talkie-build.json` plus checksums.
+   The probe checks coturn issuance structure/expiry, or Cloudflare credential
+   response shape when both Cloudflare probe variables are supplied. It does not
+   test real TURN allocation or audio.
+6. Only then set the repository's public `VITE_SIGNALING_URL` variable (or use
+   the dispatch `signaling_url` input) to that verified endpoint and run the
+   existing Windows workflow. Do not place any server-side secret in that value.
+   The candidate job checks public health/WSS before bundling and includes
+   `talkie-build.json`, checksums, and release metadata. A safe syntax fallback
+   is not live and cannot pass the tagged-release gate.
 7. Give both testers the **same endpoint-configured** private artifact. Use
    headphones, permit the microphone, create/join with room code/token, and
    verify silence at idle, bidirectional held PTT and immediate release. Continue
@@ -161,7 +166,8 @@ Local tests may validate HMAC generation, expiry, credential non-disclosure,
 config selection and failed connections. A validation-only production compile
 uses a syntactically valid fixture domain and is **never** a deployable installer.
 Until SSH/deployment is restored, public health, WSS, live TURN and a new real-
-endpoint Windows installer remain **BLOCKED**, not successful.
+endpoint Windows installer remain **BLOCKED**, not successful. A runtime URL
+override or a CI safe-example artifact does not change that status.
 
 ### Local verification completed for this continuation
 

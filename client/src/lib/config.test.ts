@@ -40,4 +40,19 @@ describe('signaling configuration', () => {
       if (!result.ok) expect(result.error).not.toContain('secret');
     }
   });
+
+  it('prefers the runtime localStorage override over the build environment', () => {
+    const storage = new Map<string, string>([['talkie.signalingUrl', validationFixture]]);
+    const runtime = { getItem: (key: string) => storage.get(key) ?? null };
+    expect(resolveSignalingConfig('wss://build.example.net/ws', false, runtime)).toEqual({ ok: true, url: validationFixture });
+  });
+
+  it('validates a runtime production override as a public wss endpoint', () => {
+    const storage = { getItem: () => 'ws://127.0.0.1:8787' };
+    expect(resolveSignalingConfig(validationFixture, false, storage)).toMatchObject({ ok: false, error: expect.stringContaining('real public wss://') });
+  });
+
+  it('falls back to the development loopback when no runtime or build URL exists', () => {
+    expect(resolveSignalingConfig(undefined, true, { getItem: () => null })).toEqual({ ok: true, url: 'ws://127.0.0.1:8787' });
+  });
 });

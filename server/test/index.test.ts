@@ -48,6 +48,14 @@ describe("environment configuration", () => {
     expect(optionsFromEnvironment({ ...dynamic, TURN_SHARED_SECRET: "é".repeat(16) }).turnRest).toBeDefined();
   });
 
+  it("requires both Cloudflare TURN credentials and keeps them server-side", () => {
+    const options = optionsFromEnvironment({ CF_TURN_KEY_ID: "key-id", CF_TURN_API_TOKEN: "api-token" });
+    expect(options.cloudflareTurn).toMatchObject({ keyId: "key-id", apiToken: "api-token" });
+    expect(() => optionsFromEnvironment({ CF_TURN_KEY_ID: "key-id" })).toThrow(/CF_TURN/);
+    expect(() => optionsFromEnvironment({ CF_TURN_API_TOKEN: "api-token" })).toThrow(/CF_TURN/);
+    expect(() => optionsFromEnvironment({ CF_TURN_KEY_ID: " ", CF_TURN_API_TOKEN: "api-token" })).toThrow(/CF_TURN/);
+  });
+
   it.each([
     { TURN_SHARED_SECRET: "short" },
     { TURN_SHARED_SECRET: " ".repeat(32) },

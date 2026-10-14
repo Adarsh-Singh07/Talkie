@@ -3,6 +3,7 @@ button:focus-visible { outline: 3px solid #c5caff; outline-offset: 4px; }
 button:disabled { cursor: not-allowed; opacity: .6; }
 .readiness { list-style: none; padding: 16px; border-radius: 12px; background: #11152a; color: #a7aecb; line-height: 1.8; }
 .error { color: #ffb4c1; }
+.server-settings { margin-top: 28px; padding: 16px; border: 1px solid #30395f; border-radius: 12px; background: #11152a; }.server-settings summary { cursor: pointer; color: #c5cae3; font-weight: 700; }.server-settings .muted { margin-bottom: 0; font-size: .85rem; }.server-settings code { overflow-wrap: anywhere; }
 .room h1 { overflow-wrap: anywhere; }
 @media (max-width: 520px) { .actions { flex-direction: column; } header { gap: 14px; flex-wrap: wrap; } }
 * { box-sizing: border-box; } body { margin: 0; min-width: 320px; } button, input { font: inherit; }

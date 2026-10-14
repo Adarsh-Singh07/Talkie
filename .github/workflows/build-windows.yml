@@ -4,6 +4,16 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      signaling_url:
+        description: 'Verified public wss:// signaling URL to embed (overrides the repository variable)'
+        required: false
+        type: string
+      skip_live_probe:
+        description: 'Explicitly skip the public health/WebSocket probe (validation artifact only; never publishes a tag release)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -31,17 +41,20 @@ jobs:
         run: npm run build
       - run: npm run test:production
       - name: Explain artifact gate
-        run: echo "Validation output is not published. Candidate job requires the VITE_SIGNALING_URL repository variable and a successful public TLS/WebSocket probe."
+        run: echo "Validation output is not published. A candidate requires an explicit endpoint or the marked safe example, and a tagged release additionally requires a successful public TLS/WebSocket probe."
 
   candidate:
     name: Verified-endpoint unsigned Windows candidate
     needs: checks
-    if: ${{ github.event_name != 'pull_request' && vars.VITE_SIGNALING_URL != '' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) }}
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      # Public build-time setting only. Never pass server TURN/admin secrets here.
-      VITE_SIGNALING_URL: ${{ vars.VITE_SIGNALING_URL }}
+      # Explicit dispatch input wins. The repository variable is the normal tag
+      # path; the fixture is a safe syntax fallback and is never a live claim.
+      VITE_SIGNALING_URL: ${{ inputs.signaling_url || vars.VITE_SIGNALING_URL || 'wss://signal.talkie-validation-fixture.net/rooms' }}
+      SIGNALING_URL_SOURCE: ${{ inputs.signaling_url && 'dispatch input' || vars.VITE_SIGNALING_URL && 'repository variable' || 'safe example fallback (not live)' }}
+      SIGNALING_URL_IS_FALLBACK: ${{ ((inputs.signaling_url == '' && vars.VITE_SIGNALING_URL == '') || inputs.signaling_url == 'wss://signal.talkie-validation-fixture.net/rooms' || vars.VITE_SIGNALING_URL == 'wss://signal.talkie-validation-fixture.net/rooms') && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -49,23 +62,72 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Explain endpoint selection
+        shell: pwsh
+        run: |
+          Write-Host "Endpoint source: $env:SIGNALING_URL_SOURCE"
+          if ($env:SIGNALING_URL_IS_FALLBACK -eq 'true') {
+            Write-Host 'The safe example endpoint is syntax-only and is never claimed to be live.'
+          }
+      - name: Reject non-live release inputs
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && (env.SIGNALING_URL_IS_FALLBACK == 'true' || inputs.skip_live_probe == true) }}
+        run: throw 'Tagged releases require a real endpoint and an unskipped live probe.'
       - name: Verify public health, trusted TLS, WebSocket and room protocol
+        if: ${{ inputs.skip_live_probe != true }}
+        env:
+          # These are optional server-side credentials. The probe validates them
+          # only when both are present and never prints either value.
+          CF_TURN_KEY_ID: ${{ secrets.CF_TURN_KEY_ID }}
+          CF_TURN_API_TOKEN: ${{ secrets.CF_TURN_API_TOKEN }}
         run: npm run verify:public
+      - name: Record explicit probe skip
+        if: ${{ inputs.skip_live_probe == true }}
+        run: echo 'Live probe skipped because workflow_dispatch.skip_live_probe was explicitly true; this candidate is validation-only.'
       - run: rustup show
       - run: npm run tauri -- info
       - run: npm run tauri -- build -- --locked
       - name: Record artifact checksums
         shell: pwsh
         run: |
-          node scripts/verify-windows.mjs | Tee-Object -FilePath artifact-checksums.jsonl
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+           node scripts/verify-windows.mjs | Tee-Object -FilePath artifact-checksums.jsonl
+           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+           New-Item -ItemType Directory -Force release-assets | Out-Null
+           Copy-Item src-tauri/target/release/talkie.exe release-assets/Talkie-Portable.exe
+           Copy-Item src-tauri/target/release/bundle/nsis/*-setup.exe release-assets/
+           Copy-Item client/dist/talkie-build.json release-assets/talkie-build.json
+           Copy-Item artifact-checksums.jsonl release-assets/artifact-checksums.jsonl
+           $build = Get-Content client/dist/talkie-build.json -Raw | ConvertFrom-Json
+           [ordered]@{
+             schemaVersion = 1
+             tag = if ($env:GITHUB_REF_NAME -like 'v*') { $env:GITHUB_REF_NAME } else { $null }
+             commit = $env:GITHUB_SHA
+             endpointSource = $env:SIGNALING_URL_SOURCE
+             endpointStatus = if ($env:SIGNALING_URL_IS_FALLBACK -eq 'true') { 'safe-example-fallback-not-live' } elseif ('${{ inputs.skip_live_probe }}' -eq 'true') { 'live-probe-skipped-explicitly' } else { 'live-probe-passed' }
+             embeddedSignalingUrl = $build.signalingUrl
+             unsigned = $true
+           } | ConvertTo-Json | Set-Content release-assets/release-metadata.json
       - uses: actions/upload-artifact@v4
         with:
           name: Talkie-Windows-x64-unsigned
           if-no-files-found: error
           retention-days: 14
-          path: |
-            src-tauri/target/release/talkie.exe
-            src-tauri/target/release/bundle/nsis/*-setup.exe
-            client/dist/talkie-build.json
-            artifact-checksums.jsonl
+          path: release-assets
+
+  release:
+    name: Publish tagged Windows release
+    needs: candidate
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Talkie-Windows-x64-unsigned
+          path: release-assets
+      - name: Publish installer, portable executable, checksums and metadata
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*

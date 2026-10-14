@@ -24,6 +24,7 @@ describe('fail-closed PTT intent', () => {
 
   it('requires a matching grant, and ignores repeated presses', () => {
     expect(requesting().phase).toBe('requesting');
+    expect(requesting().triggerSource).toBe('ui');
     expect(pttReducer(requesting(), { type: 'press' })).toEqual(requesting());
     expect(pttReducer(requesting(), { type: 'grant', requestId: 5 }).phase).toBe('requesting');
     expect(transmitting().phase).toBe('transmitting');
@@ -49,6 +50,22 @@ describe('fail-closed PTT intent', () => {
     expect(pttReducer(pttReducer(transmitting(), { type: 'disconnect' }), { type: 'press' }).phase).toBe('off');
     const reset = pttReducer(transmitting(), { type: 'focus-loss' });
     expect(pttReducer(reset, { type: 'gates', connected: true, inRoom: true, micReady: true }).phase).toBe('off');
+  });
+
+  it('keeps a global shortcut trigger through focus loss and hidden state', () => {
+    const global = pttReducer(ready(), { type: 'press', source: 'global-shortcut' });
+    const transmittingGlobal = pttReducer(global, { type: 'grant', requestId: 1 });
+    expect(transmittingGlobal.triggerSource).toBe('global-shortcut');
+    expect(pttReducer(transmittingGlobal, { type: 'focus-loss' })).toEqual(transmittingGlobal);
+    expect(pttReducer(transmittingGlobal, { type: 'hidden' })).toEqual(transmittingGlobal);
+    expect(pttReducer(transmittingGlobal, { type: 'release', source: 'ui' })).toEqual(transmittingGlobal);
+    expect(pttReducer(transmittingGlobal, { type: 'release', source: 'global-shortcut' })).toMatchObject({ phase: 'off', triggerSource: null });
+  });
+
+  it('uses the UI trigger by default and clears the trigger at every lease gate', () => {
+    expect(initialPttState.triggerSource).toBeNull();
+    expect(pttReducer(requesting(), { type: 'deny' })).toMatchObject({ phase: 'off', triggerSource: null });
+    expect(pttReducer(requesting(), { type: 'gates', connected: true, inRoom: true, micReady: false })).toMatchObject({ phase: 'off', triggerSource: null });
   });
 
   it('accepts only the still-pending, identified, unexpired floor grant', () => {
