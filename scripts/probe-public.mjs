@@ -8,6 +8,12 @@ const config = resolveSignalingConfig(process.env.VITE_SIGNALING_URL, false);
 if (!config.ok) throw new Error(config.error);
 const cloudflareKeyId = process.env.CF_TURN_KEY_ID?.trim();
 const cloudflareApiToken = process.env.CF_TURN_API_TOKEN?.trim();
+const cloudflareTurnUrls = new Set([
+  'turn:turn.cloudflare.com:3478?transport=udp',
+  'turn:turn.cloudflare.com:3478?transport=tcp',
+  'turns:turn.cloudflare.com:5349?transport=tcp',
+]);
+const isCloudflareTurnUrl = url => /^turns?:turn\.cloudflare\.com:/i.test(url);
 if (Boolean(cloudflareKeyId) !== Boolean(cloudflareApiToken)) {
   throw new Error('Cloudflare TURN probe credentials must be supplied together; no credential value is logged.');
 }
@@ -84,12 +90,17 @@ try {
   const turn = issued.filter(server => /^turns?:/i.test(String(server.urls)));
   if (process.argv.includes('--require-turn')) assert.ok(turn.length > 0, 'TURN credentials required but not issued');
   if (cloudflareKeyId) assert.ok(turn.length > 0, 'Cloudflare TURN credentials supplied but the public room did not issue a TURN entry');
+  const cloudflareTurn = turn.filter(server => cloudflareTurnUrls.has(String(server.urls)));
+  if (cloudflareTurn.length) {
+    assert.deepEqual(new Set(cloudflareTurn.map(server => server.urls)), cloudflareTurnUrls, 'Cloudflare TURN transport set is incomplete');
+    assert.ok(cloudflareTurn.every(server => typeof server.username === 'string' && server.username.length > 0 && typeof server.credential === 'string' && server.credential.length > 0), 'Cloudflare TURN credentials missing from the public room');
+  }
   for (const server of turn) {
     if (/^\d+:[0-9a-f]{32}$/.test(server.username ?? '')) {
       const ttl = Number(server.username.split(':')[0]) - Math.floor(Date.now() / 1000);
       assert.ok(ttl > 0 && ttl <= 86400, 'TURN expiry must be in the bounded future');
       assert.match(server.credential ?? '', /^[A-Za-z0-9+/]{27}=$/, 'Expected HMAC-SHA1 base64 credential');
-    } else if (cloudflareKeyId) {
+    } else if (cloudflareKeyId || isCloudflareTurnUrl(String(server.urls))) {
       // Cloudflare credentials have a provider-defined username/credential
       // shape. Their authorization and ICE shape are validated separately.
       assert.ok(typeof server.username === 'string' && server.username.length > 0, 'Cloudflare TURN username missing');
