@@ -11,7 +11,13 @@ describe("Cloudflare signaling protocol helpers", () => {
 
   it("accepts the existing create and signal wire shapes", () => {
     expect(parseClientMessage(JSON.stringify({ v: 1, id: "a", type: "create", sessionId: "s", generation: 1 }))).toEqual({ v: 1, id: "a", type: "create", sessionId: "s", generation: 1 });
+    expect(parseClientMessage(JSON.stringify({ v: 1, id: "j", type: "join", roomCode: "ABC123", sessionId: "s", generation: 1 }))).toEqual({ v: 1, id: "j", type: "join", roomCode: "ABC123", sessionId: "s", generation: 1 });
     expect(parseClientMessage(JSON.stringify({ v: 1, id: "b", type: "signal", kind: "ice", payload: "candidate", generation: 1, epoch: 2 }))).toMatchObject({ type: "signal", kind: "ice", epoch: 2 });
+  });
+
+  it("requires an uppercase six-character room code and rejects invitation credentials", () => {
+    for (const roomCode of ["abc123", "ABC12", "ABC1234", "ABC-12"]) expect(() => parseClientMessage(JSON.stringify({ v: 1, id: "j", type: "join", roomCode, sessionId: "s", generation: 1 }))).toThrow("invalid_message");
+    expect(() => parseClientMessage(JSON.stringify({ v: 1, id: "j", type: "join", roomCode: "ABC123", invitationToken: "legacy", sessionId: "s", generation: 1 }))).toThrow("invalid_message");
   });
 
   it("rejects oversized and extra-field messages", () => {

@@ -18,7 +18,7 @@ Mock browser WebRTC APIs to verify one microphone track, `enabled=false` initial
 
 ### Signaling server
 
-Test room creation/join authorization, invalid and expired invitations, two-person capacity, schema and size limits, offer/answer/ICE relay, heartbeat timeout, disconnect cleanup, room expiry, rate limits, replay/stale-generation rejection, floor lease, duplicate release, and maximum transmission duration.
+Test room creation/join authorization, malformed and expired room codes, two-person capacity, schema and size limits, offer/answer/ICE relay, heartbeat timeout, disconnect cleanup, room expiry, rate limits, replay/stale-generation rejection, floor lease, duplicate release, and maximum transmission duration.
 
 ### Windows/manual matrix
 

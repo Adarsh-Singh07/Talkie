@@ -1,13 +1,12 @@
 const PROTOCOL_VERSION = 1;
 const MAX_MESSAGE_BYTES = 65_536;
-const MAX_ROOM_CODE_LENGTH = 64;
 const MAX_SESSION_ID_LENGTH = 128;
-const MAX_INVITATION_TOKEN_LENGTH = 256;
 const MAX_RESUME_TOKEN_LENGTH = 256;
 const MAX_SDP_LENGTH = 32_768;
 const MAX_ICE_LENGTH = 8_192;
 const MAX_LEASE_ID_LENGTH = 128;
 const ROOM_CODE_LENGTH = 6;
+const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
 const ROOM_TTL_SECONDS = 3_600;
 const FLOOR_LEASE_MS = 30_000;
 const RATE_WINDOW_MS = 10_000;
@@ -64,7 +63,7 @@ export interface CloudflareTurnOptions {
 }
 type CloudflareTurnProvider = { getIceServers: () => Promise<IceServer[]> };
 type Floor = { sessionId: string; generation: number; epoch: number; leaseId: string; leaseDurationMs: number; expiresAt: number; speaking: boolean };
-type RoomRow = { code: string; invitation_hash: string; expires_at: number; epoch: number; negotiating: number; floor_json: string | null };
+type RoomRow = { code: string; expires_at: number; epoch: number; negotiating: number; floor_json: string | null };
 type IdentityRow = { resume_hash: string; generation: number };
 type Attachment = {
   connectionId: string;
@@ -78,7 +77,7 @@ type Attachment = {
 };
 type ClientMessage =
   | { v: 1; id: string; type: "create"; sessionId: string; generation: number }
-  | { v: 1; id: string; type: "join"; roomCode: string; invitationToken: string; sessionId: string; generation: number; resumeToken?: string }
+  | { v: 1; id: string; type: "join"; roomCode: string; sessionId: string; generation: number; resumeToken?: string }
   | { v: 1; id: string; type: "ready" | "leave"; generation: number }
   | { v: 1; id: string; type: "signal"; kind: "offer" | "answer" | "ice"; payload: string; generation: number; epoch: number }
   | { v: 1; id: string; type: "request_floor"; generation: number; epoch: number }
@@ -240,7 +239,7 @@ export function parseClientMessage(raw: string | ArrayBuffer, maxBytes = MAX_MES
   if ((m.type === "ready" || m.type === "leave") && exactKeys(m, "v", "id", "type", "generation")) return { v: 1, id: m.id, type: m.type, generation: generation as number };
   if (m.type === "ping" && exactKeys(m, "v", "id", "type")) return { v: 1, id: m.id, type: "ping" };
   if (m.type === "create" && exactKeys(m, "v", "id", "type", "sessionId", "generation") && validString(m.sessionId, MAX_SESSION_ID_LENGTH)) return { v: 1, id: m.id, type: "create", sessionId: m.sessionId, generation: generation as number };
-  if (m.type === "join" && (exactKeys(m, "v", "id", "type", "roomCode", "invitationToken", "sessionId", "generation") || (exactKeys(m, "v", "id", "type", "roomCode", "invitationToken", "sessionId", "generation", "resumeToken") && validString(m.resumeToken, MAX_RESUME_TOKEN_LENGTH))) && typeof m.roomCode === "string" && /^[A-Z0-9]{6}$/.test(m.roomCode) && validString(m.invitationToken, MAX_INVITATION_TOKEN_LENGTH) && validString(m.sessionId, MAX_SESSION_ID_LENGTH)) return { v: 1, id: m.id, type: "join", roomCode: m.roomCode, invitationToken: m.invitationToken, sessionId: m.sessionId, generation: generation as number, ...(typeof m.resumeToken === "string" ? { resumeToken: m.resumeToken } : {}) };
+  if (m.type === "join" && (exactKeys(m, "v", "id", "type", "roomCode", "sessionId", "generation") || (exactKeys(m, "v", "id", "type", "roomCode", "sessionId", "generation", "resumeToken") && validString(m.resumeToken, MAX_RESUME_TOKEN_LENGTH))) && typeof m.roomCode === "string" && ROOM_CODE_PATTERN.test(m.roomCode) && validString(m.sessionId, MAX_SESSION_ID_LENGTH)) return { v: 1, id: m.id, type: "join", roomCode: m.roomCode, sessionId: m.sessionId, generation: generation as number, ...(typeof m.resumeToken === "string" ? { resumeToken: m.resumeToken } : {}) };
   if (m.type === "signal" && exactKeys(m, "v", "id", "type", "kind", "payload", "generation", "epoch") && Number.isSafeInteger(m.epoch) && (m.epoch as number) > 0 && (m.kind === "offer" || m.kind === "answer" || m.kind === "ice") && validString(m.payload, m.kind === "ice" ? MAX_ICE_LENGTH : MAX_SDP_LENGTH)) return { v: 1, id: m.id, type: "signal", kind: m.kind, payload: m.payload, generation: generation as number, epoch: m.epoch as number };
   const validEpoch = Number.isSafeInteger(m.epoch) && (m.epoch as number) > 0;
   if (m.type === "request_floor" && exactKeys(m, "v", "id", "type", "generation", "epoch") && validEpoch) return { v: 1, id: m.id, type: "request_floor", generation: generation as number, epoch: m.epoch as number };
@@ -357,7 +356,14 @@ export class RoomState {
     this.ice = loadIceConfig(env, roomTtlSeconds);
     this.cloudflareTurn = this.ice.cloudflareTurn ? createCloudflareTurnProvider(this.ice.cloudflareTurn) : undefined;
     this.ready = state.blockConcurrencyWhile(async () => {
-      state.storage.sql.exec("CREATE TABLE IF NOT EXISTS rooms (code TEXT PRIMARY KEY, invitation_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, negotiating INTEGER NOT NULL DEFAULT 0, floor_json TEXT)");
+      state.storage.sql.exec("CREATE TABLE IF NOT EXISTS rooms (code TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, negotiating INTEGER NOT NULL DEFAULT 0, floor_json TEXT)");
+      const roomColumns = state.storage.sql.exec("PRAGMA table_info(rooms)").toArray() as Array<{ name?: unknown }>;
+      if (roomColumns.some(column => column.name === "invitation_hash")) {
+        state.storage.sql.exec("CREATE TABLE rooms_v2 (code TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, negotiating INTEGER NOT NULL DEFAULT 0, floor_json TEXT)");
+        state.storage.sql.exec("INSERT INTO rooms_v2 (code, expires_at, epoch, negotiating, floor_json) SELECT code, expires_at, epoch, negotiating, floor_json FROM rooms");
+        state.storage.sql.exec("DROP TABLE rooms");
+        state.storage.sql.exec("ALTER TABLE rooms_v2 RENAME TO rooms");
+      }
       state.storage.sql.exec("CREATE TABLE IF NOT EXISTS identities (room_code TEXT NOT NULL, session_id TEXT NOT NULL, resume_hash TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY (room_code, session_id))");
       state.storage.sql.exec("CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms (expires_at)");
       state.storage.sql.exec("CREATE INDEX IF NOT EXISTS identities_room ON identities (room_code)");
@@ -383,7 +389,7 @@ export class RoomState {
       await this.expireDueRooms();
       if (!this.spend(requestIp(request), "create")) return json({ error: "rate_limited" }, 429);
       const room = await this.createRoom();
-      return json({ v: 1, roomCode: room.code, invitationToken: room.token, expiresAt: room.expiresAt }, 201);
+      return json({ v: 1, roomCode: room.code, expiresAt: room.expiresAt }, 201);
     } catch (error) {
       const code = error instanceof Error ? error.message : "invalid_request";
       return json({ error: code === "room_capacity" ? code : "invalid_request" }, code === "room_capacity" ? 503 : 400);
@@ -394,16 +400,16 @@ export class RoomState {
     return this.state.storage.sql.exec(query, ...values).toArray() as T[];
   }
 
-  private async createRoom(): Promise<{ code: string; token: string; expiresAt: number }> {
+  private async createRoom(): Promise<{ code: string; expiresAt: number }> {
+    await this.expireDueRooms();
     const count = this.sql<{ count: number }>("SELECT COUNT(*) AS count FROM rooms")[0]?.count ?? 0;
     if (count >= this.limits.maxRooms) throw new Error("room_capacity");
     let code = "";
     do { code = this.randomRoomCode(); } while (this.sql("SELECT code FROM rooms WHERE code = ?", code).length);
-    const token = randomToken();
     const expiresAt = Date.now() + this.limits.roomTtlSeconds * 1_000;
-    this.sql("INSERT INTO rooms (code, invitation_hash, expires_at) VALUES (?, ?, ?)", code, await hashToken(token), expiresAt);
+    this.sql("INSERT INTO rooms (code, expires_at) VALUES (?, ?)", code, expiresAt);
     await this.scheduleAlarm();
-    return { code, token, expiresAt };
+    return { code, expiresAt };
   }
 
   private randomRoomCode(): string {
@@ -506,12 +512,11 @@ export class RoomState {
     const ownResume = randomToken();
     this.sql("INSERT INTO identities (room_code, session_id, resume_hash, generation) VALUES (?, ?, ?, ?)", created.code, message.sessionId, await hashToken(ownResume), message.generation);
     attachment.roomCode = created.code; attachment.sessionId = message.sessionId; attachment.generation = message.generation; attachment.ready = false; this.saveAttachment(ws, attachment);
-    return { ack: { v: 1, type: "created", id: message.id, roomCode: created.code, invitationToken: created.token, resumeToken: ownResume, participantCount: 1, generation: message.generation, iceServers: await issueIceServers(this.ice, this.cloudflareTurn) }, peerMessages: [], roomCode: created.code };
+    return { ack: { v: 1, type: "created", id: message.id, roomCode: created.code, resumeToken: ownResume, participantCount: 1, generation: message.generation, iceServers: await issueIceServers(this.ice, this.cloudflareTurn) }, peerMessages: [], roomCode: created.code };
   }
 
   private async admitJoin(ws: WebSocket, attachment: Attachment, message: Extract<ClientMessage, { type: "join" }>): Promise<{ ack: Record<string, unknown>; peerMessages: Array<{ ws: WebSocket; message: Record<string, unknown> }>; roomCode: string; replacedFloor?: Floor }> {
     const room = await this.room(message.roomCode); if (!room) throw new Error("unauthorized_room");
-    if (!equalBytes(await hashToken(message.invitationToken), room.invitation_hash)) throw new Error("unauthorized_room");
     const identity = this.sql<IdentityRow>("SELECT resume_hash, generation FROM identities WHERE room_code = ? AND session_id = ?", room.code, message.sessionId)[0];
     if (identity && (!message.resumeToken || message.resumeToken.length > MAX_RESUME_TOKEN_LENGTH || !equalBytes(await hashToken(message.resumeToken), identity.resume_hash))) throw new Error("invalid_resume_token");
     if (!identity && message.resumeToken !== undefined) throw new Error("invalid_resume_token");
@@ -544,7 +549,7 @@ export class RoomState {
   }
 
   private async room(code: string): Promise<RoomRow | undefined> {
-    const room = this.sql<RoomRow>("SELECT code, invitation_hash, expires_at, epoch, negotiating, floor_json FROM rooms WHERE code = ?", code)[0];
+    const room = this.sql<RoomRow>("SELECT code, expires_at, epoch, negotiating, floor_json FROM rooms WHERE code = ?", code)[0];
     if (room && room.expires_at <= Date.now()) { await this.expireRoom(room); return undefined; }
     return room;
   }
@@ -584,7 +589,7 @@ export class RoomState {
   }
 
   private async expireDueRooms(): Promise<void> {
-    const rooms = this.sql<RoomRow>("SELECT code, invitation_hash, expires_at, epoch, negotiating, floor_json FROM rooms WHERE expires_at <= ?", Date.now());
+    const rooms = this.sql<RoomRow>("SELECT code, expires_at, epoch, negotiating, floor_json FROM rooms WHERE expires_at <= ?", Date.now());
     for (const room of rooms) await this.expireRoom(room);
   }
 
@@ -594,7 +599,7 @@ export class RoomState {
     await this.scheduleAlarm();
   }
 
-  async alarm(): Promise<void> { await this.ready; await this.expireDueRooms(); for (const room of this.sql<RoomRow>("SELECT code, invitation_hash, expires_at, epoch, negotiating, floor_json FROM rooms WHERE floor_json IS NOT NULL")) { const floor = JSON.parse(room.floor_json ?? "null") as Floor | null; if (floor && floor.expiresAt <= Date.now() && room.negotiating === 1 && floor.epoch === room.epoch) { this.sql("UPDATE rooms SET floor_json = NULL WHERE code = ?", room.code); this.broadcast(room.code, { v: 1, type: "floor_expired", sessionId: floor.sessionId, leaseId: floor.leaseId, epoch: floor.epoch }); } } await this.scheduleAlarm(); }
+  async alarm(): Promise<void> { await this.ready; await this.expireDueRooms(); for (const room of this.sql<RoomRow>("SELECT code, expires_at, epoch, negotiating, floor_json FROM rooms WHERE floor_json IS NOT NULL")) { const floor = JSON.parse(room.floor_json ?? "null") as Floor | null; if (floor && floor.expiresAt <= Date.now() && room.negotiating === 1 && floor.epoch === room.epoch) { this.sql("UPDATE rooms SET floor_json = NULL WHERE code = ?", room.code); this.broadcast(room.code, { v: 1, type: "floor_expired", sessionId: floor.sessionId, leaseId: floor.leaseId, epoch: floor.epoch }); } } await this.scheduleAlarm(); }
 
   private async scheduleAlarm(): Promise<void> {
     const next = this.sql<{ expires_at: number }>("SELECT MIN(expires_at) AS expires_at FROM rooms")[0]?.expires_at;

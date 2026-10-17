@@ -25,7 +25,7 @@ try {
   a.client.create();
   await until(() => a.events.some(event => event.type === 'room'), 'create');
   const room = a.events.find(event => event.type === 'room');
-  b.client.join(room.roomCode, room.invitationToken);
+  b.client.join(room.roomCode);
   await until(() => a.client.currentEpoch === 1 && b.client.currentEpoch === 1, 'initial ready barrier');
   a.client.sendSignal('offer', 'contract-test-sdp');
   await until(() => b.events.some(event => event.type === 'signal' && event.payload === 'contract-test-sdp'), 'offer relay');

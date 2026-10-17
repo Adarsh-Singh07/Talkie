@@ -2,17 +2,18 @@
 
 All messages remain protocol version `v: 1`. Request IDs are socket-local and acknowledgements echo the initiating `id`. `generation` in server messages is the **recipient's** connection generation; peers may reconnect independently.
 
-## Private session resumption
+## Room-code admission and private session resumption
 
-- Initial `create` and initial `join` fields are unchanged. A successful own `created` / `joined` acknowledgement now also contains a random `resumeToken`.
-- Store that token privately alongside this room's invitation token, session ID, and generation. Do not put it in invitation links or forward it to a peer.
-- Rejoining any previously used `sessionId` requires `{ v: 1, id, type: "join", roomCode, invitationToken, sessionId, generation, resumeToken }`. The room invitation remains mandatory. The generation must be a safe nonnegative integer strictly greater than that identity's last successful generation.
+- `create` allocates one uppercase six-character `roomCode` from the non-ambiguous room-code alphabet. A successful own `created` acknowledgement contains that code and a random `resumeToken`; it contains no invitation credential.
+- Initial `join` uses `{ v: 1, id, type: "join", roomCode, sessionId, generation }`. `roomCode` must match `/^[A-Z0-9]{6}$/`; the room code is the sole room admission credential.
+- Store the acknowledgement's `resumeToken` privately alongside the room code, session ID, and generation. Do not forward it to a peer.
+- Rejoining any previously used `sessionId` requires `{ v: 1, id, type: "join", roomCode, sessionId, generation, resumeToken }`. The generation must be a safe nonnegative integer strictly greater than that identity's last successful generation.
 - Missing or incorrect resume proof returns `invalid_resume_token` without closing/replacing the existing session or changing its floor. A valid proof with a non-increasing generation returns `stale_generation`.
-- Credentials remain valid until room expiry and do not rotate on successful resume. Only the SHA-256 hash is retained server-side. Disconnected identities remain tombstones until the original room TTL expires; reusing an old ID still requires its proof. A fresh session ID can join a free slot without a resume token.
-- The other peer still receives the existing unsolicited `joined` event to rebuild audio. That event has no request ID, invitation token, or resume token. Clients must only save a resume token from their own ID-correlated acknowledgement.
+- Resume credentials remain valid until room expiry and do not rotate on successful resume. Only the SHA-256 hash is retained server-side. Disconnected identities remain tombstones until the original room TTL expires; reusing an old ID still requires its proof. A fresh session ID can join a free slot without a resume token.
+- The other peer still receives the existing unsolicited `joined` event to rebuild audio. That event has no request ID or resume token. Clients must only save a resume token from their own ID-correlated acknowledgement.
 - A room expires at its original deadline; joins do not extend TTL. Expiry proactively sends `{ v: 1, type: "error", generation, code: "room_expired" }` and closes both participant sockets with close code `1000` and reason `room_expired`.
 
-**Required client follow-up:** retain the private acknowledgement token and include it when reconnecting the same session ID. Clearing the token means the old identity cannot be resumed. Ordinary first joins retain the original fields.
+**Required client follow-up:** retain the private acknowledgement token and include it when reconnecting the same session ID. Clearing the token means the old identity cannot be resumed.
 
 ## Epoch-bound push-to-talk
 
@@ -27,7 +28,7 @@ All messages remain protocol version `v: 1`. Request IDs are socket-local and ac
 
 ## Temporary coturn REST credentials (remote trial)
 
-The server now supports **new server-only settings** `TURN_SHARED_SECRET` and `TURN_CREDENTIAL_TTL_SECONDS`. These were not part of the former static TURN configuration. Provision them through the server process environment or hosting secret store; never put the shared secret in client/Tauri build settings, invitation links, logs, or committed `.env` files. No real secret, hosting setup, or deployment is included here.
+The server now supports **new server-only settings** `TURN_SHARED_SECRET` and `TURN_CREDENTIAL_TTL_SECONDS`. These were not part of the former static TURN configuration. Provision them through the server process environment or hosting secret store; never put the shared secret in client/Tauri build settings, room-code links, logs, or committed `.env` files. No real secret, hosting setup, or deployment is included here.
 
 | Setting | Contract |
 | --- | --- |

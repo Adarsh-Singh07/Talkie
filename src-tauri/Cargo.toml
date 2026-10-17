@@ -1,6 +1,6 @@
 [package]
 name = "talkie"
-version = "0.1.0"
+version = "0.2.0"
 description = "Talkie Windows push-to-talk desktop client"
 authors = ["Talkie contributors"]
 edition = "2021"

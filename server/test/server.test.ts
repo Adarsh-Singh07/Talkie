@@ -23,7 +23,7 @@ async function start(options: ServerOptions = {}) {
 }
 
 function joinMessage(created: Message, sessionId: string, generation: number, id = "join", resumeToken?: unknown): Message {
-  return { v: 1, id, type: "join", roomCode: created.roomCode, invitationToken: created.invitationToken, sessionId, generation, ...(resumeToken !== undefined ? { resumeToken } : {}) };
+  return { v: 1, id, type: "join", roomCode: created.roomCode, sessionId, generation, ...(resumeToken !== undefined ? { resumeToken } : {}) };
 }
 
 async function ready(a: TestSocket, b: TestSocket, generationA = 1, generationB = 7, epoch = 1) {
@@ -39,6 +39,7 @@ async function pair(options: ServerOptions = {}, makeReady = true) {
   a.send({ v: 1, id: "create", type: "create", sessionId: "a", generation: 1 });
   const created = await a.next();
   expect(created).toMatchObject({ type: "created", id: "create", generation: 1, participantCount: 1, resumeToken: expect.any(String) });
+  expect(created).not.toHaveProperty("invitationToken");
   b.send(joinMessage(created, "b", 7)); const joined = await b.next();
   expect(joined).toMatchObject({ type: "joined", id: "join", generation: 7, participantCount: 2, resumeToken: expect.any(String) });
   expect(joined.resumeToken).not.toBe(created.resumeToken);
@@ -134,7 +135,6 @@ describe("signaling server", () => {
     const created = await a.next();
     expect(issuance).toHaveBeenCalledTimes(1);
     for (const [id, overrides] of [
-      ["wrong-invitation", { invitationToken: "wrong" }],
       ["missing-room", { roomCode: "ZZZZZZ" }],
       ["stolen-identity", { sessionId: "a" }],
     ] as const) {
@@ -183,7 +183,7 @@ describe("signaling server", () => {
 
   it("echoes the requesting generation for rejected pre-join credentials", async () => {
     const app = await start(); const socket = await app.connect();
-    socket.send({ v: 1, id: "bad-join", type: "join", roomCode: "ABC123", invitationToken: "wrong", sessionId: "new", generation: 9 });
+    socket.send({ v: 1, id: "bad-join", type: "join", roomCode: "ABC123", sessionId: "new", generation: 9 });
     expect(await socket.next()).toMatchObject({ v: 1, id: "bad-join", type: "error", generation: 9, code: "unauthorized_room" });
   });
   it("creates, joins, and relays signaling with each recipient's independent generation", async () => {
@@ -266,7 +266,7 @@ describe("signaling server", () => {
   it("rejects missing and incorrect live resume proof without touching a victim's floor", async () => {
     const { a, b, created, joined, connect, signaling } = await pair(); const floor = await grant(a, b);
     const attacker = await connect();
-    for (const [index, proof] of [undefined, "wrong", created.invitationToken, joined.resumeToken].entries()) {
+    for (const [index, proof] of [undefined, "wrong", joined.resumeToken].entries()) {
       attacker.send(joinMessage(created, "a", 99, `hijack-${index}`, proof));
       expect(await attacker.next()).toMatchObject({ type: "error", id: `hijack-${index}`, code: "invalid_resume_token" });
       expect(signaling.manager.get(String(created.roomCode))?.floor?.leaseId).toBe(floor.leaseId);

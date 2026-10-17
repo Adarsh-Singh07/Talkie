@@ -7,7 +7,7 @@ function setup() {
   const client = new SignalingClient('ws://test', url => { const socket = new FakeSocket(url); sockets.push(socket); return socket; });
   client.on(event => events.push(event)); client.create(); sockets[0].open();
   const socket = sockets[0];
-  const joined = () => socket.message({ type: 'created', roomCode: 'ABC123', invitationToken: 'secret', resumeToken: 'private-session-token' });
+  const joined = () => socket.message({ type: 'created', roomCode: 'ABC123', resumeToken: 'private-session-token' });
   const ready = (epoch = 1) => socket.message({ type: 'peer_ready', offerer: true, epoch });
   return { client, socket, sockets, events, joined, ready };
 }
@@ -19,7 +19,7 @@ describe('versioned signaling', () => {
     const client = new SignalingClient('ws://test', factory);
     const events: SignalingEvent[] = [];
     client.on(event => events.push(event));
-    expect(() => mode === 'create' ? client.create() : client.join('ABC123', 'secret')).not.toThrow();
+    expect(() => mode === 'create' ? client.create() : client.join('ABC123')).not.toThrow();
     expect(client.state).toBe('closed');
     expect(events).toContainEqual({ type: 'error', code: 'signaling_start_failed' });
     expect(client.currentEpoch).toBeUndefined();
@@ -61,12 +61,12 @@ describe('versioned signaling', () => {
     const { client, socket, events } = setup();
     for (const type of ['created', 'joined', 'error', 'peer_left']) {
       for (const invalid of [{ v: undefined }, { v: 2 }, { generation: undefined }, { generation: 0 }, { generation: 2 }]) {
-        socket.message({ type, roomCode: 'ABC123', invitationToken: 'secret', code: 'fatal', ...invalid });
+        socket.message({ type, roomCode: 'ABC123', code: 'fatal', ...invalid });
       }
     }
     expect(events.every(event => event.type === 'state')).toBe(true);
-    socket.message({ type: 'created', roomCode: 'ABC123', invitationToken: 'secret' });
-    expect(events).toContainEqual({ type: 'room', roomCode: 'ABC123', invitationToken: 'secret' });
+    socket.message({ type: 'created', roomCode: 'ABC123' });
+    expect(events).toContainEqual({ type: 'room', roomCode: 'ABC123' });
     client.disconnect();
   });
 
@@ -104,7 +104,8 @@ describe('versioned signaling', () => {
     expect(client.ready()).toBe(false); joined(); expect(client.ready()).toBe(true); expect(client.ready()).toBe(false);
     socket.message({ type: 'joined', roomCode: 'ABC123' }); expect(client.ready()).toBe(true);
     socket.close(); vi.advanceTimersByTime(1_000); sockets[1].open();
-    expect(sockets[1].handshake).toMatchObject({ type: 'join', generation: 2, invitationToken: 'secret', resumeToken: 'private-session-token' });
+    expect(sockets[1].handshake).toMatchObject({ type: 'join', generation: 2, resumeToken: 'private-session-token' });
+    expect(sockets[1].handshake).not.toHaveProperty('invitationToken');
     expect(events.filter(event => event.type === 'room').every(event => !('resumeToken' in event))).toBe(true);
     sockets[1].message({ type: 'joined', roomCode: 'ABC123' }); expect(client.ready()).toBe(true);
     const count = events.length; socket.message({ type: 'error', code: 'old' }); expect(events).toHaveLength(count);

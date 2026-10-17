@@ -9,31 +9,35 @@ function participant(sessionId: string, generation = 1): Participant {
 function pair(manager = new RoomManager()) {
   const created = manager.create();
   const a = participant("a"); const b = participant("b", 7);
-  const joinedA = manager.join(created.room.code, created.invitationToken, a);
-  const joinedB = manager.join(created.room.code, created.invitationToken, b);
+  const joinedA = manager.join(created.room.code, a);
+  const joinedB = manager.join(created.room.code, b);
   manager.ready(created.room, a); manager.ready(created.room, b);
   return { manager, ...created, a, b, resumeA: joinedA.resumeToken, resumeB: joinedB.resumeToken };
 }
 
 describe("room manager", () => {
+  it("generates six-character codes without ambiguous characters", () => {
+    const manager = new RoomManager();
+    const { room } = manager.create();
+    expect(room.code).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
+  });
+
   it("bounds identity churn while still permitting authenticated resumes", () => {
-    const manager = new RoomManager(); const { room, invitationToken } = manager.create();
+    const manager = new RoomManager(); const { room } = manager.create();
     let proof = '';
     for (let i = 0; i < 128; i++) {
       const peer = participant(`peer-${i}`);
-      const joined = manager.join(room.code, invitationToken, peer);
+      const joined = manager.join(room.code, peer);
       if (i === 0) proof = joined.resumeToken;
       manager.remove(room.code, peer.sessionId, peer);
     }
-    expect(() => manager.join(room.code, invitationToken, participant('overflow'))).toThrow('room_identity_limit');
-    expect(manager.join(room.code, invitationToken, participant('peer-0', 2), proof).room).toBe(room);
+    expect(() => manager.join(room.code, participant('overflow'))).toThrow('room_identity_limit');
+    expect(manager.join(room.code, participant('peer-0', 2), proof).room).toBe(room);
   });
-  it("authorizes hashed invitations and enforces two participants", () => {
-    const { manager, room, invitationToken } = pair();
-    expect(room.invitationHash).not.toBe(invitationToken);
-    expect(tokensMatch(invitationToken, room.invitationHash)).toBe(true);
-    expect(() => manager.join(room.code, invitationToken, participant("c"))).toThrow("room_full");
-    expect(() => manager.join(room.code, "wrong", participant("c"))).toThrow("unauthorized_room");
+  it("authorizes by room code and enforces two participants", () => {
+    const { manager, room } = pair();
+    expect(() => manager.join(room.code, participant("c"))).toThrow("room_full");
+    expect(() => manager.join("WRONG", participant("c"))).toThrow("unauthorized_room");
   });
 
   it("retains an empty room and its identity tombstones until expiry", () => {
@@ -45,11 +49,11 @@ describe("room manager", () => {
   });
 
   it("requires two ready current peers before granting the floor", () => {
-    const manager = new RoomManager(); const { room, invitationToken } = manager.create();
+    const manager = new RoomManager(); const { room } = manager.create();
     const a = participant("a"); const b = participant("b");
-    manager.join(room.code, invitationToken, a);
+    manager.join(room.code, a);
     expect(() => manager.requestFloor(room, "a", 1, 1)).toThrow("stale_epoch");
-    manager.ready(room, a); manager.join(room.code, invitationToken, b);
+    manager.ready(room, a); manager.join(room.code, b);
     expect(() => manager.requestFloor(room, "a", 1, 1)).toThrow("stale_epoch");
     manager.ready(room, b);
     expect(manager.requestFloor(room, "a", 1, 1)).toMatchObject({ epoch: 1, leaseDurationMs: 30_000 });
@@ -86,12 +90,12 @@ describe("room manager", () => {
     expect(manager.setSpeaking(room, "a", 1, 1, floor.leaseId, true).speaking).toBe(true);
   });
 
-  it("requires private resume proof even when an attacker knows the invitation and session ID", () => {
-    const { manager, room, invitationToken, a, resumeA, resumeB } = pair();
+  it("requires private resume proof even when an attacker knows the room code and session ID", () => {
+    const { manager, room, a, resumeA, resumeB } = pair();
     const floor = manager.requestFloor(room, "a", 1, 1);
     const replacement = participant("a", 999);
-    for (const proof of [undefined, "wrong", invitationToken, resumeB]) {
-      expect(() => manager.join(room.code, invitationToken, replacement, proof)).toThrow("invalid_resume_token");
+    for (const proof of [undefined, "wrong", resumeB]) {
+      expect(() => manager.join(room.code, replacement, proof)).toThrow("invalid_resume_token");
       expect(room.participants.get("a")).toBe(a); expect(room.floor).toBe(floor); expect(room.negotiating).toBe(true);
     }
     expect(a.close).not.toHaveBeenCalled();
@@ -100,9 +104,9 @@ describe("room manager", () => {
   });
 
   it("does not let an old connection remove a securely authorized replacement", () => {
-    const { manager, room, invitationToken, a, resumeA } = pair();
+    const { manager, room, a, resumeA } = pair();
     const floor = manager.requestFloor(room, "a", 1, 1); const replacement = participant("a", 2);
-    expect(manager.join(room.code, invitationToken, replacement, resumeA)).toMatchObject({ room, resumeToken: resumeA, replacedFloor: floor });
+    expect(manager.join(room.code, replacement, resumeA)).toMatchObject({ room, resumeToken: resumeA, replacedFloor: floor });
     expect(a.close).toHaveBeenCalledWith("session_replaced");
     expect(manager.remove(room.code, "a", a)).toBeUndefined();
     expect(room.participants.get("a")).toBe(replacement); expect(room.floor).toBeUndefined();
@@ -110,19 +114,19 @@ describe("room manager", () => {
   });
 
   it.each(["a", "b"])("clears the floor when %s disconnects and allows a fresh identity into its free slot", sessionId => {
-    const { manager, room, invitationToken } = pair(); const floor = manager.requestFloor(room, "a", 1, 1);
+    const { manager, room } = pair(); const floor = manager.requestFloor(room, "a", 1, 1);
     expect(manager.remove(room.code, sessionId)?.floor).toBe(floor);
     expect(room.floor).toBeUndefined(); expect(room.negotiating).toBe(false);
-    expect(manager.join(room.code, invitationToken, participant("c", 0)).room.participants.size).toBe(2);
+    expect(manager.join(room.code, participant("c", 0)).room.participants.size).toBe(2);
   });
 
   it("requires proof and increasing generations for disconnected tombstones", () => {
-    const { manager, room, invitationToken, a, resumeA } = pair(); manager.remove(room.code, "a", a);
-    expect(() => manager.join(room.code, invitationToken, participant("a", 2))).toThrow("invalid_resume_token");
-    expect(() => manager.join(room.code, invitationToken, participant("a", 2), "wrong")).toThrow("invalid_resume_token");
-    expect(() => manager.join(room.code, invitationToken, participant("a", 1), resumeA)).toThrow("stale_generation");
-    expect(() => manager.join(room.code, invitationToken, participant("c", 1), resumeA)).toThrow("invalid_resume_token");
-    expect(manager.join(room.code, invitationToken, participant("a", 2), resumeA).resumeToken).toBe(resumeA);
+    const { manager, room, a, resumeA } = pair(); manager.remove(room.code, "a", a);
+    expect(() => manager.join(room.code, participant("a", 2))).toThrow("invalid_resume_token");
+    expect(() => manager.join(room.code, participant("a", 2), "wrong")).toThrow("invalid_resume_token");
+    expect(() => manager.join(room.code, participant("a", 1), resumeA)).toThrow("stale_generation");
+    expect(() => manager.join(room.code, participant("c", 1), resumeA)).toThrow("invalid_resume_token");
+    expect(manager.join(room.code, participant("a", 2), resumeA).resumeToken).toBe(resumeA);
   });
 
   it("expires a floor exactly once at its lease deadline", () => {
@@ -132,9 +136,9 @@ describe("room manager", () => {
   });
 
   it("starts a new epoch with independent generations and does not expire an invalidated old lease", () => {
-    let now = 0; const { manager, room, invitationToken, a, b, resumeA } = pair(new RoomManager(1000, () => now, 10));
+    let now = 0; const { manager, room, a, b, resumeA } = pair(new RoomManager(1000, () => now, 10));
     manager.requestFloor(room, "a", 1, 1);
-    const replacement = participant("a", 2); manager.join(room.code, invitationToken, replacement, resumeA);
+    const replacement = participant("a", 2); manager.join(room.code, replacement, resumeA);
     expect(room.negotiating).toBe(false); expect(() => manager.ready(room, a)).toThrow("stale_generation");
     manager.ready(room, replacement); manager.ready(room, b); expect(room.epoch).toBe(2);
     now = 5; const current = manager.requestFloor(room, "b", 7, 2);
@@ -143,12 +147,12 @@ describe("room manager", () => {
   });
 
   it("preserves the first peer's readiness through a staggered both-drop rejoin", () => {
-    const { manager, room, invitationToken, a, b, resumeA, resumeB } = pair();
+    const { manager, room, a, b, resumeA, resumeB } = pair();
     manager.remove(room.code, "a", a); manager.remove(room.code, "b", b);
     const newA = participant("a", 3); const newB = participant("b", 8);
-    manager.join(room.code, invitationToken, newA, resumeA); manager.ready(room, newA);
+    manager.join(room.code, newA, resumeA); manager.ready(room, newA);
     expect(room.negotiating).toBe(false);
-    manager.join(room.code, invitationToken, newB, resumeB); manager.ready(room, newB);
+    manager.join(room.code, newB, resumeB); manager.ready(room, newB);
     expect(room.epoch).toBe(2); expect(room.negotiating).toBe(true);
     expect(manager.requestFloor(room, "a", 3, 2).epoch).toBe(2);
   });

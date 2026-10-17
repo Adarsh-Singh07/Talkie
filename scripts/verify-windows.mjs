@@ -2,9 +2,10 @@ import { readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 
+const { version } = JSON.parse(await readFile('src-tauri/tauri.conf.json', 'utf8'));
 for (const [path, expectedMachine] of [
   ['src-tauri/target/release/talkie.exe', 0x8664],
-  ['src-tauri/target/release/bundle/nsis/Talkie_0.1.0_x64-setup.exe', 0x14c],
+  [`src-tauri/target/release/bundle/nsis/Talkie_${version}_x64-setup.exe`, 0x14c],
 ]) {
   const bytes = await readFile(path);
   const info = await stat(path);

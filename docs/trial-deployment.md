@@ -156,7 +156,7 @@ management path, not credentials.
    `talkie-build.json`, checksums, and release metadata. A safe syntax fallback
    is not live and cannot pass the tagged-release gate.
 7. Give both testers the **same endpoint-configured** private artifact. Use
-   headphones, permit the microphone, create/join with room code/token, and
+   headphones, permit the microphone, create/join with the six-character room code, and
    verify silence at idle, bidirectional held PTT and immediate release. Continue
    the hardware/network checklist in the baseline audit; none is presumed passed.
 

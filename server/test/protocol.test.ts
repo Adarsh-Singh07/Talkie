@@ -4,8 +4,9 @@ import { parseMessage } from "../src/protocol.js";
 
 describe("protocol", () => {
 it("accepts bounded join and rejects malformed/versioned messages", () => {
-  const message = parseMessage(Buffer.from(JSON.stringify({ v: 1, id: "1", type: "join", roomCode: "ABC123", invitationToken: "token", sessionId: "s", generation: 0 })));
+  const message = parseMessage(Buffer.from(JSON.stringify({ v: 1, id: "1", type: "join", roomCode: "ABC123", sessionId: "s", generation: 0 })));
   assert.equal(message.type, "join");
+  assert.throws(() => parseMessage(JSON.stringify({ v: 1, id: "1", type: "join", roomCode: "ABC123", invitationToken: "legacy", sessionId: "s", generation: 0 })));
   assert.throws(() => parseMessage(Buffer.from(JSON.stringify({ v: 2, id: "1", type: "ping" }))));
   assert.throws(() => parseMessage(Buffer.alloc(65_537)));
 });
@@ -38,10 +39,11 @@ it.each(["request_floor", "release_floor", "speaking"])("requires a positive saf
 });
 
 it("accepts an optional bounded resume token only on join", () => {
-  const message = { v: 1, id: "join", type: "join", roomCode: "ABC123", invitationToken: "invite", sessionId: "a", generation: 2 };
+  const message = { v: 1, id: "join", type: "join", roomCode: "ABC123", sessionId: "a", generation: 2 };
   expect(parseMessage(JSON.stringify(message))).toEqual(message);
   expect(parseMessage(JSON.stringify({ ...message, resumeToken: "secret" }))).toEqual({ ...message, resumeToken: "secret" });
   for (const resumeToken of [null, false, "", "x".repeat(257)]) expect(() => parseMessage(JSON.stringify({ ...message, resumeToken }))).toThrow("invalid_message");
   expect(() => parseMessage(JSON.stringify({ v: 1, id: "c", type: "create", sessionId: "a", generation: 0, resumeToken: "secret" }))).toThrow("invalid_message");
+  for (const roomCode of ["abc123", "ABC12", "ABC1234", "ABC-12", "АBC123"]) expect(() => parseMessage(JSON.stringify({ ...message, roomCode }))).toThrow("invalid_message");
 });
 });

@@ -1,17 +1,16 @@
 export const PROTOCOL_VERSION = 1;
 export const MAX_MESSAGE_BYTES = 65_536;
-export const MAX_ROOM_CODE_LENGTH = 64;
 export const MAX_SESSION_ID_LENGTH = 128;
-export const MAX_INVITATION_TOKEN_LENGTH = 256;
 export const MAX_SDP_LENGTH = 32_768;
 export const MAX_ICE_LENGTH = 8_192;
 export const ROOM_CODE_LENGTH = 6;
+export const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
 export const MAX_LEASE_ID_LENGTH = 128;
 export const MAX_RESUME_TOKEN_LENGTH = 256;
 
 export type ClientMessage =
   | { v: 1; id: string; type: "create"; sessionId: string; generation: number }
-  | { v: 1; id: string; type: "join"; roomCode: string; invitationToken: string; sessionId: string; generation: number; resumeToken?: string }
+  | { v: 1; id: string; type: "join"; roomCode: string; sessionId: string; generation: number; resumeToken?: string }
   | { v: 1; id: string; type: "ready" | "leave"; generation: number }
   | { v: 1; id: string; type: "signal"; kind: "offer" | "answer" | "ice"; payload: string; generation: number; epoch: number }
   | { v: 1; id: string; type: "request_floor"; generation: number; epoch: number }
@@ -48,8 +47,8 @@ export function parseMessage(raw: string | Buffer | ArrayBuffer | Buffer[], maxB
   if (m.type === "create" && exact("v", "id", "type", "sessionId", "generation") && boundedString(m.sessionId, MAX_SESSION_ID_LENGTH) && Number.isInteger(m.generation) && (m.generation as number) >= 0) {
     return { v: 1, id: m.id, type: "create", sessionId: m.sessionId, generation: m.generation as number };
   }
-  if (m.type === "join" && (exact("v", "id", "type", "roomCode", "invitationToken", "sessionId", "generation") || (exact("v", "id", "type", "roomCode", "invitationToken", "sessionId", "generation", "resumeToken") && boundedString(m.resumeToken, MAX_RESUME_TOKEN_LENGTH))) && typeof m.roomCode === "string" && /^[A-Z0-9]{6}$/.test(m.roomCode) && boundedString(m.invitationToken, MAX_INVITATION_TOKEN_LENGTH) && boundedString(m.sessionId, MAX_SESSION_ID_LENGTH)) {
-    return { v: 1, id: m.id, type: "join", roomCode: m.roomCode, invitationToken: m.invitationToken, sessionId: m.sessionId, generation: m.generation as number, ...(typeof m.resumeToken === "string" ? { resumeToken: m.resumeToken } : {}) };
+  if (m.type === "join" && (exact("v", "id", "type", "roomCode", "sessionId", "generation") || (exact("v", "id", "type", "roomCode", "sessionId", "generation", "resumeToken") && boundedString(m.resumeToken, MAX_RESUME_TOKEN_LENGTH))) && typeof m.roomCode === "string" && ROOM_CODE_PATTERN.test(m.roomCode) && boundedString(m.sessionId, MAX_SESSION_ID_LENGTH)) {
+    return { v: 1, id: m.id, type: "join", roomCode: m.roomCode, sessionId: m.sessionId, generation: m.generation as number, ...(typeof m.resumeToken === "string" ? { resumeToken: m.resumeToken } : {}) };
   }
   if (m.type === "signal" && exact("v", "id", "type", "kind", "payload", "generation", "epoch") && Number.isSafeInteger(m.epoch) && (m.epoch as number) > 0 && (m.kind === "offer" || m.kind === "answer" || m.kind === "ice") && boundedString(m.payload, m.kind === "ice" ? MAX_ICE_LENGTH : MAX_SDP_LENGTH)) {
     return { v: 1, id: m.id, type: "signal", kind: m.kind, payload: m.payload, generation: m.generation as number, epoch: m.epoch as number };

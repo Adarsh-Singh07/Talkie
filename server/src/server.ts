@@ -154,12 +154,12 @@ export function createSignalingServer(options: ServerOptions = {}) {
           const participant: Participant = { sessionId: message.sessionId, generation: message.generation, send, close: reason => { cleanup(); ws.close(1000, reason); } };
           const created = message.type === "create" ? manager.create() : undefined;
           const { room, resumeToken, replacedFloor } = message.type === "join"
-            ? manager.join(message.roomCode, message.invitationToken, participant, message.resumeToken)
-            : manager.join(created!.room.code, created!.invitationToken, participant);
+            ? manager.join(message.roomCode, participant, message.resumeToken)
+            : manager.join(created!.room.code, participant);
           state.roomCode = room.code; state.sessionId = message.sessionId; state.participant = participant;
           const admissionIceServers = cloudflareTurn ? [...(await cloudflareTurn.getIceServers())] : issueIceServers(options.iceServers ?? [], options.turnRest);
           if (state.cleaned || state.participant !== participant || room.participants.get(participant.sessionId) !== participant) return;
-          send({ v: 1, type: created ? "created" : "joined", id, roomCode: room.code, ...(created ? { invitationToken: created.invitationToken } : {}), resumeToken, participantCount: room.participants.size, generation: participant.generation, iceServers: admissionIceServers.length ? admissionIceServers : issueIceServers(options.iceServers ?? [], options.turnRest) });
+          send({ v: 1, type: created ? "created" : "joined", id, roomCode: room.code, resumeToken, participantCount: room.participants.size, generation: participant.generation, iceServers: admissionIceServers.length ? admissionIceServers : issueIceServers(options.iceServers ?? [], options.turnRest) });
           if (message.type === "join") {
             const peerIceServers = cloudflareTurn ? [...(await cloudflareTurn.getIceServers())] : issueIceServers(options.iceServers ?? [], options.turnRest);
             if (state.cleaned || state.participant !== participant || room.participants.get(participant.sessionId) !== participant) return;

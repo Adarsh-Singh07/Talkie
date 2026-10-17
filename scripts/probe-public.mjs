@@ -75,7 +75,7 @@ try {
   a.client.create();
   await until(() => a.events.some(event => event.type === 'room'), 'room creation');
   const room = a.events.find(event => event.type === 'room');
-  b.client.join(room.roomCode, room.invitationToken);
+  b.client.join(room.roomCode);
   await until(() => a.client.currentEpoch && b.client.currentEpoch === a.client.currentEpoch, 'room joining and ready barrier');
   a.client.sendSignal('offer', 'Talkie protocol-only network probe; not audio SDP');
   await until(() => b.events.some(event => event.type === 'signal' && event.kind === 'offer'), 'offer relay');

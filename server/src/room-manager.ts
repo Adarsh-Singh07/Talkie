@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { createInvitationToken, hashInvitationToken, tokensMatch } from "./security.js";
-import { MAX_INVITATION_TOKEN_LENGTH, MAX_RESUME_TOKEN_LENGTH, ROOM_CODE_LENGTH } from "./protocol.js";
+import { createResumeToken, hashResumeToken, tokensMatch } from "./security.js";
+import { MAX_RESUME_TOKEN_LENGTH, ROOM_CODE_LENGTH, ROOM_CODE_PATTERN } from "./protocol.js";
 import { randomUUID } from "node:crypto";
 
 export interface Participant { sessionId: string; generation: number; send: (message: Record<string, unknown>) => void; close?: (reason: string) => void; ready?: boolean; }
 export interface Floor { sessionId: string; generation: number; epoch: number; leaseId: string; leaseDurationMs: number; expiresAt: number; speaking: boolean; }
 interface Identity { resumeHash: string; generation: number; }
-export interface Room { code: string; invitationHash: string; expiresAt: number; participants: Map<string, Participant>; identities: Map<string, Identity>; floor?: Floor; epoch: number; negotiating: boolean; }
+export interface Room { code: string; expiresAt: number; participants: Map<string, Participant>; identities: Map<string, Identity>; floor?: Floor; epoch: number; negotiating: boolean; }
 
 export class RoomManager {
   private readonly rooms = new Map<string, Room>();
@@ -16,14 +16,13 @@ export class RoomManager {
     if (!Number.isSafeInteger(maxRooms) || maxRooms < 0) throw new Error("Invalid maxRooms");
   }
 
-  create(): { room: Room; invitationToken: string } {
+  create(): { room: Room } {
     if (this.size() >= this.maxRooms) throw new Error("room_capacity");
     let code = this.createRoomCode();
     while (this.rooms.has(code)) code = this.createRoomCode();
-    const invitationToken = createInvitationToken();
-    const room: Room = { code, invitationHash: hashInvitationToken(invitationToken), expiresAt: this.now() + this.ttlMs, participants: new Map(), identities: new Map(), epoch: 0, negotiating: false };
+    const room: Room = { code, expiresAt: this.now() + this.ttlMs, participants: new Map(), identities: new Map(), epoch: 0, negotiating: false };
     this.rooms.set(code, room);
-    return { room, invitationToken };
+    return { room };
   }
 
   private createRoomCode(): string {
@@ -32,12 +31,12 @@ export class RoomManager {
     return Array.from(bytes, byte => alphabet[byte % alphabet.length]).join("");
   }
 
-  join(code: string, token: string, participant: Participant, resumeToken?: string): { room: Room; resumeToken: string; replacedFloor?: Floor } {
+  join(code: string, participant: Participant, resumeToken?: string): { room: Room; resumeToken: string; replacedFloor?: Floor } {
     const room = this.get(code);
-    if (!room || typeof token !== "string" || token.length === 0 || token.length > MAX_INVITATION_TOKEN_LENGTH || !tokensMatch(token, room.invitationHash)) throw new Error("unauthorized_room");
+    if (!ROOM_CODE_PATTERN.test(code) || !room) throw new Error("unauthorized_room");
     const identity = room.identities.get(participant.sessionId);
-    // Retain identities after disconnect: knowing the shared invitation and a disclosed
-    // sessionId must never be enough to impersonate either a live or departed peer.
+    // Retain identities after disconnect: knowing a disclosed sessionId must never be
+    // enough to impersonate either a live or departed peer.
     if (identity && (typeof resumeToken !== "string" || resumeToken.length === 0 || resumeToken.length > MAX_RESUME_TOKEN_LENGTH || !tokensMatch(resumeToken, identity.resumeHash))) throw new Error("invalid_resume_token");
     if (!identity && resumeToken !== undefined) throw new Error("invalid_resume_token");
     if (identity && participant.generation <= identity.generation) throw new Error("stale_generation");
@@ -50,8 +49,8 @@ export class RoomManager {
       this.invalidate(room);
       for (const peer of room.participants.values()) if (peer !== existing) peer.send({ v: 1, type: "peer_left", generation: peer.generation, sessionId: existing.sessionId });
     }
-    const ownResumeToken = resumeToken ?? createInvitationToken();
-    room.identities.set(participant.sessionId, { resumeHash: hashInvitationToken(ownResumeToken), generation: participant.generation });
+    const ownResumeToken = resumeToken ?? createResumeToken();
+    room.identities.set(participant.sessionId, { resumeHash: hashResumeToken(ownResumeToken), generation: participant.generation });
     participant.ready = false;
     room.participants.set(participant.sessionId, participant);
     existing?.close?.("session_replaced");

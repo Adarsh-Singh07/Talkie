@@ -4,7 +4,7 @@ type SocketLike = Pick<WebSocket, 'send' | 'close'> & { readyState: number; onop
 type SocketFactory = (url: string) => SocketLike;
 export type SignalingEvent =
   | { type: 'state'; state: SignalingState }
-  | { type: 'room'; roomCode: string; invitationToken: string; iceServers?: RTCIceServer[] }
+  | { type: 'room'; roomCode: string; iceServers?: RTCIceServer[] }
   | { type: 'peer_ready'; offerer: boolean; epoch: number; generation: number }
   | { type: 'peer_left'; generation: number }
   | { type: 'signal'; kind: SignalKind; payload: string; generation: number; epoch: number }
@@ -23,7 +23,7 @@ export class SignalingClient {
   private socket?: SocketLike;
   private generation = 0;
   private stopped = false;
-  private credentials?: { mode: 'create' | 'join'; roomCode?: string; invitationToken?: string; resumeToken?: string };
+  private credentials?: { mode: 'create' | 'join'; roomCode?: string; resumeToken?: string };
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private retries = 0;
   private epoch?: number;
@@ -38,7 +38,7 @@ export class SignalingClient {
   private setState(state: SignalingState) { this.state = state; this.emit({ type: 'state', state }); }
 
   create() { this.highestEpoch = 0; this.credentials = { mode: 'create' }; this.connect(); }
-  join(roomCode: string, invitationToken: string) { this.highestEpoch = 0; this.credentials = { mode: 'join', roomCode, invitationToken }; this.connect(); }
+  join(roomCode: string) { this.highestEpoch = 0; this.credentials = { mode: 'join', roomCode: roomCode.replace(/\s+/g, '').toUpperCase().slice(0, 6) }; this.connect(); }
   private connect() {
     this.stopped = false;
     if (this.reconnectTimer) {
@@ -66,7 +66,7 @@ export class SignalingClient {
       this.setState('connected');
       const id = crypto.randomUUID(); const c = this.credentials!;
       try {
-        this.sendRaw(c.mode === 'create' ? { v: 1, id, type: 'create', sessionId: this.sessionId, generation } : { v: 1, id, type: 'join', roomCode: c.roomCode!, invitationToken: c.invitationToken!, sessionId: this.sessionId, generation, ...(c.resumeToken ? { resumeToken: c.resumeToken } : {}) });
+        this.sendRaw(c.mode === 'create' ? { v: 1, id, type: 'create', sessionId: this.sessionId, generation } : { v: 1, id, type: 'join', roomCode: c.roomCode!, sessionId: this.sessionId, generation, ...(c.resumeToken ? { resumeToken: c.resumeToken } : {}) });
       } catch { this.emit({ type: 'error', code: 'signaling_unavailable' }); socket.close(); }
     };
     socket.onmessage = event => this.receive(event.data, generation);
@@ -118,13 +118,11 @@ export class SignalingClient {
       if (!message || typeof message !== 'object' || message.v !== 1 || message.generation !== generation) return;
       const responseGeneration = message.generation;
       if ((message.type === 'created' || message.type === 'joined') && typeof message.roomCode === 'string' && responseGeneration === generation) {
-        const invitationToken = typeof message.invitationToken === 'string' ? message.invitationToken : this.credentials?.invitationToken;
-        if (!invitationToken) return;
         // The private session credential is never exposed in the shareable room
         // event. Peer-refresh acks omit it and must retain the existing value.
         const resumeToken = typeof message.resumeToken === 'string' && message.resumeToken ? message.resumeToken : this.credentials?.resumeToken;
-        this.credentials = { mode: 'join', roomCode: message.roomCode, invitationToken, resumeToken }; this.retries = 0; this.epoch = undefined; this.readyGeneration = undefined;
-        this.setState('joined'); const roomEvent: Extract<SignalingEvent, { type: 'room' }> = { type: 'room', roomCode: message.roomCode, invitationToken }; if (Array.isArray(message.iceServers)) roomEvent.iceServers = message.iceServers as RTCIceServer[]; this.emit(roomEvent); return;
+        this.credentials = { mode: 'join', roomCode: message.roomCode, resumeToken }; this.retries = 0; this.epoch = undefined; this.readyGeneration = undefined;
+        this.setState('joined'); const roomEvent: Extract<SignalingEvent, { type: 'room' }> = { type: 'room', roomCode: message.roomCode }; if (Array.isArray(message.iceServers)) roomEvent.iceServers = message.iceServers as RTCIceServer[]; this.emit(roomEvent); return;
       }
       if (message.type === 'peer_left' && message.generation === generation) { this.epoch = undefined; this.emit({ type: 'peer_left', generation }); return; }
       if (message.type === 'peer_ready' && typeof message.offerer === 'boolean') {

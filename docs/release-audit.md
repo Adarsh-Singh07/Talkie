@@ -126,8 +126,8 @@ does not publish a GitHub Release or claim Authenticode signing.
 3. Global shortcut is fixed Ctrl+Shift+Space. A registration conflict fails
    setup; there is no shortcut conflict recovery/settings UI. Close the owning
    application before running the trial.
-4. No OS deep-link handler is registered for copied `talkie://` invitations.
-   Use the room code/token fields. No tray, updater, or remote deployment is claimed.
+4. No OS deep-link handler is registered; room joining uses the six-character code directly.
+   No tray, updater, or remote deployment is claimed.
 5. No physical capture, remote listening, lock/sleep, or full-screen hotkey result
    can be inferred from a responding window or a TypeScript test.
 6. The signaling server cannot police audio sent by a deliberately modified

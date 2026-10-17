@@ -7,7 +7,7 @@ The proposed Tauri + WebView2 + WebRTC design is viable for a Windows MVP. It wa
 ## MVP baseline decisions
 
 1. WebRTC audio is peer-to-peer or TURN-relayed; the signaling server never receives media.
-2. The room code identifies a room, but a private, short-lived invitation token authorizes a join. Store only a token hash server-side.
+2. The room code is the single join capability: six uppercase characters, generated from a non-ambiguous alphabet, checked for active-room uniqueness, and protected by room capacity and rate limits. Resume tokens remain private per-session credentials.
 3. Every message has a protocol version, message ID, participant session ID, connection generation, and bounded payload. Mutating operations are idempotent where practical.
 4. The server authoritatively grants a PTT floor lease with a transmission ID, expiry, maximum duration, and automatic release on disconnect or heartbeat timeout.
 5. Signaling and WebRTC have separate state machines. Rejoin and renegotiation create a new connection generation; stale messages are rejected.
@@ -19,7 +19,7 @@ The proposed Tauri + WebView2 + WebRTC design is viable for a Windows MVP. It wa
 
 ### P0: signaling security
 
-DTLS-SRTP encrypts media but does not authorize room membership. Validate invitation capability, bind messages to a participant session, reject replay/stale generations, enforce capacity, and rate-limit connections, joins, and message sizes.
+DTLS-SRTP encrypts media but does not authorize room membership. Validate the room-code capability, bind messages to a participant session, reject replay/stale generations, enforce capacity, and rate-limit connections, joins, and message sizes.
 
 ### P0: stuck PTT
 
@@ -39,7 +39,6 @@ Define close-to-tray versus quit, sleep/resume, workstation lock, single-instanc
 
 ## Decisions still required
 
-- Token lifetime and whether invitations are single-use.
 - Floor lease, heartbeat, and maximum transmission durations.
 - Reconnect backoff and maximum retry duration.
 - Whether IP privacy requires relay-only mode.

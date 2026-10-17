@@ -41,7 +41,7 @@ async function mount() {
   return { container, socket };
 }
 async function joined(socket: FakeSocket, epoch = 1, fresh = false) {
-  await act(async () => socket.message({ type: fresh ? 'joined' : 'created', roomCode: 'ABC123', ...(fresh ? {} : { invitationToken: 'secret', resumeToken: 'private-session-token' }) }));
+  await act(async () => socket.message({ type: fresh ? 'joined' : 'created', roomCode: 'ABC123', ...(fresh ? {} : { resumeToken: 'private-session-token' }) }));
   const peer = FakePeer.instances.at(-1)!;
   await act(async () => socket.message({ type: 'peer_ready', offerer: true, epoch }));
   await act(async () => peer.transition('connected'));
@@ -75,6 +75,20 @@ afterEach(async () => {
 });
 
 describe('mounted App → signaling → AudioSession sender safety', () => {
+  it('persists the display name and joins with a normalized six-character code only', async () => {
+    const container = await renderForm();
+    expect(window.localStorage.getItem('talkie.displayName')).toBe('Tester');
+    const code = container.querySelector<HTMLInputElement>('#room-code')!;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(code, ' ab 12c3 extra ');
+    await act(async () => code.dispatchEvent(new Event('input', { bubbles: true })));
+    expect(code.value).toBe('AB12C3');
+    await act(async () => click(button(container, 'Join room')));
+    const socket = FakeSocket.instances.at(-1)!;
+    await act(async () => socket.open());
+    expect(socket.handshake).toMatchObject({ type: 'join', roomCode: 'AB12C3' });
+    expect(socket.handshake).not.toHaveProperty('invitationToken');
+  });
+
   it('saves, uses, and resets the runtime signaling URL from lobby Server Settings', async () => {
     const container = await renderForm();
     await act(async () => click(container.querySelector('summary')!));
@@ -157,7 +171,7 @@ describe('mounted App → signaling → AudioSession sender safety', () => {
     await act(async () => click(button(container, 'Enable audio')));
     expect(peer.track.enabled).toBe(false); expect(socket.messages('request_floor')).toHaveLength(0);
   });
-  it.each(['pointercancel', 'outside-release', 'hidden', 'native-close', 'native-blur', 'escape'])(
+  it.each(['pointercancel', 'outside-release', 'hidden', 'native-close', 'escape'])(
     'cancels a pending grant and active transmission on %s', async reason => {
       const { container, socket, peer } = await start();
       const reset = () => {
@@ -237,10 +251,10 @@ describe('mounted App → signaling → AudioSession sender safety', () => {
     await act(async () => nativeEvent('shortcut://released')); expect(peer.track.enabled).toBe(false);
   });
 
-  it('keeps focus-loss and an emergency in the same batch latched off until a fresh press', async () => {
+  it('keeps global transmission alive through focus loss while emergency stop still latches off', async () => {
     const { container, socket, peer } = await start(); await talk(socket, peer);
     await act(async () => { window.dispatchEvent(new Event('blur')); space('keydown'); grant(socket); });
-    expect(peer.track.enabled).toBe(false);
+    expect(peer.track.enabled).toBe(true);
     expect(socket.messages('request_floor')).toHaveLength(1);
     await act(async () => { space('keyup'); escape(); space('keydown'); });
     expect(socket.messages('request_floor')).toHaveLength(1);
@@ -334,7 +348,8 @@ describe('mounted App → signaling → AudioSession sender safety', () => {
     const peers: FakePeer[] = [];
     for (const socket of reconnects) {
       await act(async () => socket.open());
-      expect(socket.handshake).toMatchObject({ type: 'join', generation: 2, invitationToken: 'secret', resumeToken: 'private-session-token' });
+      expect(socket.handshake).toMatchObject({ type: 'join', generation: 2, resumeToken: 'private-session-token' });
+      expect(socket.handshake).not.toHaveProperty('invitationToken');
       peers.push(await joined(socket, 2, true));
       expect(socket.messages('ready')).toHaveLength(1);
     }
@@ -348,7 +363,7 @@ describe('mounted App → signaling → AudioSession sender safety', () => {
   it('stops stale async getUserMedia and ignores queued old-context negotiation', async () => {
     const delayed = deferred<FakeStream>(); media.getUserMedia.mockImplementationOnce(() => delayed.promise);
     const { socket } = await mount();
-    await act(async () => socket.message({ type: 'created', roomCode: 'ABC123', invitationToken: 'secret' }));
+    await act(async () => socket.message({ type: 'created', roomCode: 'ABC123' }));
     const old = FakePeer.instances.at(-1)!;
     await act(async () => socket.message({ type: 'peer_ready', epoch: 1, offerer: true }));
     const next = await joined(socket, 2, true);
@@ -379,7 +394,7 @@ describe('mounted App → signaling → AudioSession sender safety', () => {
 
   it('cannot publish an old in-flight offer or mutate the newer epoch peer', async () => {
     const { socket } = await mount();
-    await act(async () => socket.message({ type: 'created', roomCode: 'ABC123', invitationToken: 'secret' }));
+    await act(async () => socket.message({ type: 'created', roomCode: 'ABC123' }));
     const old = FakePeer.instances.at(-1)!;
     const offer = deferred<{ type: string; sdp: string }>(); old.createOffer.mockImplementationOnce(() => offer.promise);
     await act(async () => socket.message({ type: 'peer_ready', epoch: 1, offerer: true }));
